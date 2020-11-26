@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"errors"
 	"io"
 	"log"
 	"net"
@@ -11,94 +10,29 @@ import (
 
 const SERVER = "alpine:7687"
 
-func validateMagic(magic []byte) (bool, error) {
-	// 0x60, 0x60, 0xb0, 0x17
-	if len(magic) < 4 {
-		return false, errors.New("magic too short")
-	}
-	if bytes.Equal(magic, []byte{0x60, 0x60, 0xb0, 0x17}) {
-		return true, nil
-	}
-
-	return false, errors.New("invalid magic bytes")
-}
-
-func validateHandshake(client, server []byte) ([]byte, error) {
-	if len(server) != 4 {
-		return nil, errors.New("server handshake wrong size")
-	}
-
-	if len(client) != 16 {
-		return nil, errors.New("client handshake wrong size")
-	}
-
-	for i := 0; i < 4; i++ {
-		part := client[i*4 : i*4+4]
-		if bytes.Equal(server, part) {
-			return part, nil
-		}
-	}
-	return nil, errors.New("couldn't find handshake match!")
-}
-
-func tokenToType(token []byte) string {
-	if len(token) < 4 {
-		return "NOP"
-	}
-
-	var msgCode byte
-	if token[0] == 0x0 {
-		msgCode = token[3]
-	} else {
-		msgCode = token[2]
-	}
-
-	switch msgCode {
-	case 0x0f:
-		return "RESET"
-	case 0x10:
-		return "RUN"
-	case 0x2f:
-		return "DISCARD"
-	case 0x3f:
-		return "PULL"
-	case 0x71:
-		return "RECORD"
-	case 0x70:
-		return "SUCCESS"
-	case 0x7e:
-		return "IGNORED"
-	case 0x7f:
-		return "FAILURE"
-	case 0x01:
-		return "HELLO"
-	case 0x02:
-		return "GOODBYE"
-	case 0x11:
-		return "BEGIN"
-	case 0x12:
-		return "COMMIT"
-	case 0x13:
-		return "ROLLBACK"
-	default:
-		return "?UNKNOWN?"
-	}
-}
-
+// Try to split a buffer into Bolt messages based on double zero-byte delims
 func logMessages(who string, data []byte) {
 	// then, deal with N-number of bolt messages
-	for i, token := range bytes.Split(data, []byte{0, 0}) {
-		if len(token) > 0 {
-			msgType := tokenToType(token)
-			if msgType != "HELLO" {
-				log.Printf("[%s]{%d}: %s %#v\n", who, i, msgType, token)
+	for i, buf := range bytes.Split(data, []byte{0x00, 0x00}) {
+		if len(buf) > 0 {
+			msgType := ParseBoltMsg(buf)
+			if msgType != HelloMsg {
+				log.Printf("[%s]{%d}: %s %#v\n", who, i, msgType, buf)
 			} else {
 				// don't log HELLO payload...it has credentials
-				log.Printf("[%s]{%d}: %s <redacted>\n", who, i, msgType, token)
+				log.Printf("[%s]{%d}: %s <redacted>\n", who, i, msgType)
 			}
 		}
 	}
 }
+
+// notes:
+//  - if we see a RUN before we see a BEGIN, we know it's RW
+//  - if we see a BEGIN, it may or may not have a 'mode' set to 'r' for R
+//  - otherwise, RW!
+
+//  BEGIN { 'mode': 'r' }
+//  []byte{0x0, 0xa, 0xb1, 0x11, 0xa1, 0x84, 0x6d, 0x6f, 0x64, 0x65, 0x81, 0x72}
 
 // Take 2 net.Conn's...a reader and a writer...and pipe the
 // data from the reader to the writer.
@@ -129,7 +63,7 @@ func handleClient(client net.Conn) {
 
 	// peek and check for magic and handshake
 	log.Println("peeking at client buffer...")
-	buf := make([]byte, 1024)
+	buf := make([]byte, 512)
 	_, err := client.Read(buf[:20])
 	if err != nil {
 		log.Printf("error peeking at client (%v): %v\n", client, err)
@@ -140,7 +74,7 @@ func handleClient(client net.Conn) {
 	magic, handshake := buf[:4], buf[4:20]
 	log.Printf("magic: %#v, handshake: %#v\n", magic, handshake)
 
-	valid, err := validateMagic(magic)
+	valid, err := ValidateMagic(magic)
 	if !valid {
 		log.Fatal(err)
 	}
@@ -169,7 +103,7 @@ func handleClient(client net.Conn) {
 	log.Printf("SERVER Handshake: %#v\n", buf[:4])
 
 	// server wrote to first 4 bytes, so look to for client match
-	match, err := validateHandshake(handshake, buf[:4])
+	match, err := ValidateHandshake(handshake, buf[:4])
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -179,6 +113,53 @@ func handleClient(client net.Conn) {
 	}
 	log.Printf("handshake complete: %#v\n", match)
 
+	// intercept HELLO message for authentication
+	// TODO: not sure what to do here...just intercept in future?
+	n, err := client.Read(buf)
+	if err != nil {
+		log.Fatal(err)
+	}
+	logMessages("CLIENT", buf[:n])
+	_, err = server.Write(buf[:n])
+	if err != nil {
+		log.Fatal(err)
+	}
+	// zero buf to drop credentials
+	for i, _ := range buf {
+		buf[i] = 0
+	}
+	// get server response to auth
+	n, err = server.Read(buf)
+	if err != nil {
+		log.Fatal(err)
+	}
+	logMessages("SERVER", buf[:n])
+	_, err = client.Write(buf[:n])
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// wait for the client to make the first move so we can react
+	n, err = client.Read(buf)
+	if err != nil {
+		if err == io.EOF {
+			log.Println("premature EOF detected?!")
+			return
+		}
+		log.Fatal(err)
+	}
+	logMessages("CLIENT", buf[:n])
+
+	mode, err := ValidateMode(buf[:n])
+	log.Printf("XXX: TRANSACTION MODE DETECTED = %s\n", mode)
+
+	// flush the buffer to the server before splicing
+	_, err = server.Write(buf[:n])
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// set up some channels, splice, and go!
 	clientChan := make(chan bool, 1)
 	serverChan := make(chan bool, 1)
 
@@ -191,8 +172,8 @@ func handleClient(client net.Conn) {
 			log.Println("Client pipe closed.")
 		case <-serverChan:
 			log.Println("Server pipe closed.")
-		case <-time.After(120 * time.Second):
-			log.Println("Timed out!")
+		case <-time.After(5 * time.Minute):
+			log.Println("no data received in 5 mins")
 		}
 	}
 
