@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"time"
 )
 
 const SERVER = "alpine:7687"
@@ -40,20 +41,86 @@ func validateHandshake(client, server []byte) ([]byte, error) {
 	return nil, errors.New("couldn't find handshake match!")
 }
 
-func logMessages(who string, data []byte) {
-	// first, handle special messages
-	if bytes.HasPrefix(data, []byte{0, 0x94}) ||
-		bytes.HasPrefix(data, []byte{0, 0x2c}) {
-		log.Printf("[%s]: %s\n", who, data)
-		return
+func tokenToType(token []byte) string {
+	if len(token) < 4 {
+		return "NOP"
 	}
 
+	var msgCode byte
+	if token[0] == 0x0 {
+		msgCode = token[3]
+	} else {
+		msgCode = token[2]
+	}
+
+	switch msgCode {
+	case 0x0f:
+		return "RESET"
+	case 0x10:
+		return "RUN"
+	case 0x2f:
+		return "DISCARD"
+	case 0x3f:
+		return "PULL"
+	case 0x71:
+		return "RECORD"
+	case 0x70:
+		return "SUCCESS"
+	case 0x7e:
+		return "IGNORED"
+	case 0x7f:
+		return "FAILURE"
+	case 0x01:
+		return "HELLO"
+	case 0x02:
+		return "GOODBYE"
+	case 0x11:
+		return "BEGIN"
+	case 0x12:
+		return "COMMIT"
+	case 0x13:
+		return "ROLLBACK"
+	default:
+		return "?UNKNOWN?"
+	}
+}
+
+func logMessages(who string, data []byte) {
 	// then, deal with N-number of bolt messages
 	for i, token := range bytes.Split(data, []byte{0, 0}) {
 		if len(token) > 0 {
-			log.Printf("[%s]{%d}: %#v\n", who, i, token)
+			msgType := tokenToType(token)
+			if msgType != "HELLO" {
+				log.Printf("[%s]{%d}: %s %#v\n", who, i, msgType, token)
+			} else {
+				// don't log HELLO payload...it has credentials
+				log.Printf("[%s]{%d}: %s <redacted>\n", who, i, msgType, token)
+			}
 		}
 	}
+}
+
+// Take 2 net.Conn's...a reader and a writer...and pipe the
+// data from the reader to the writer.
+func splice(r, w net.Conn, name string, done chan<- bool) {
+	buf := make([]byte, 4*1024)
+	for {
+		n, err := r.Read(buf)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			log.Fatal(err)
+		}
+
+		_, err = w.Write(buf[:n])
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		logMessages(name, buf[:n])
+	}
+	done <- true
 }
 
 // Primary Client connection handler
@@ -112,37 +179,21 @@ func handleClient(client net.Conn) {
 	}
 	log.Printf("handshake complete: %#v\n", match)
 
-	// lazy splice
+	clientChan := make(chan bool, 1)
+	serverChan := make(chan bool, 1)
+
+	go splice(client, server, "CLIENT", clientChan)
+	go splice(server, client, "SERVER", serverChan)
+
 	for {
-		n, err := client.Read(buf)
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			log.Fatal(err)
+		select {
+		case <-clientChan:
+			log.Println("Client pipe closed.")
+		case <-serverChan:
+			log.Println("Server pipe closed.")
+		case <-time.After(120 * time.Second):
+			log.Println("Timed out!")
 		}
-		logMessages("CLIENT", buf[:n])
-
-		n, err = server.Write(buf[:n])
-		if err != nil {
-			log.Fatal(err)
-		}
-		log.Println("wrote message to server")
-
-		n, err = server.Read(buf)
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			log.Fatal(err)
-		}
-		logMessages("SERVER", buf[:n])
-
-		n, err = client.Write(buf[:n])
-		if err != nil {
-			log.Fatal(err)
-		}
-		log.Println("wrote message to client")
 	}
 
 	log.Println("Client dead.")
@@ -152,17 +203,12 @@ func main() {
 	log.Println("Starting bolt-proxy...")
 	defer log.Println("finished.")
 
-	addr, err := net.ResolveTCPAddr("tcp", "localhost:8888")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	listener, err := net.ListenTCP("tcp", addr)
+	listener, err := net.Listen("tcp", "localhost:8888")
 	if err != nil {
 		log.Fatal(err)
 	}
 	for {
-		conn, err := listener.AcceptTCP()
+		conn, err := listener.Accept()
 		if err != nil {
 			log.Printf("error: %v\n", err)
 		} else {
