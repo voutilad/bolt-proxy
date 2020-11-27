@@ -2,13 +2,14 @@ package main
 
 import (
 	"bytes"
+	"flag"
 	"io"
 	"log"
 	"net"
 	"time"
-)
 
-const SERVER = "alpine:7687"
+	"github.com/voutilad/bolt-proxy/router"
+)
 
 // Try to split a buffer into Bolt messages based on double zero-byte delims
 func logMessages(who string, data []byte) {
@@ -26,30 +27,39 @@ func logMessages(who string, data []byte) {
 	}
 }
 
-// notes:
-//  - if we see a RUN before we see a BEGIN, we know it's RW
-//  - if we see a BEGIN, it may or may not have a 'mode' set to 'r' for R
-//  - otherwise, RW!
+// Take 2 net.Conn's (writer and reader) and copy all bytes from the
+// reader to the writer using io.Copy(). This hopefully will leverage
+// any OS-level optimizations like zero-copy data transfer.
+//
+// The provided provided name is used for identifying the splice in logging.
+//
+// If finished without error, send a "true" flag on the provided channel.
+func splice(w, r net.Conn, name string, done chan<- bool) {
+	n, err := io.Copy(w, r)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("finished splicing %s, xfering %d bytes\n", name, n)
+	done <- true
+}
 
-//  BEGIN { 'mode': 'r' }
-//  []byte{0x0, 0xa, 0xb1, 0x11, 0xa1, 0x84, 0x6d, 0x6f, 0x64, 0x65, 0x81, 0x72}
-
-// Take 2 net.Conn's...a reader and a writer...and pipe the
-// data from the reader to the writer.
-func splice(r, w net.Conn, name string, done chan<- bool) {
+// Like splice(), but read and write data using a userland buffer while
+// logging Bolt messages seen along the way.
+func spliceDebug(w, r net.Conn, name string, done chan<- bool) {
 	buf := make([]byte, 4*1024)
 	for {
 		n, err := r.Read(buf)
 		if err != nil {
 			if err == io.EOF {
+				log.Println("EOF detected for ", name)
 				break
 			}
-			log.Fatal(err)
+			log.Fatalf("Read failure on %s splice: %s\n", name, err.Error())
 		}
 
 		_, err = w.Write(buf[:n])
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalf("Write failure on %s splice: %s\n", name, err.Error())
 		}
 
 		logMessages(name, buf[:n])
@@ -58,12 +68,11 @@ func splice(r, w net.Conn, name string, done chan<- bool) {
 }
 
 // Primary Client connection handler
-func handleClient(client net.Conn) {
+func handleClient(client net.Conn, config Config) {
 	defer client.Close()
+	buf := make([]byte, 512)
 
 	// peek and check for magic and handshake
-	log.Println("peeking at client buffer...")
-	buf := make([]byte, 512)
 	_, err := client.Read(buf[:20])
 	if err != nil {
 		log.Printf("error peeking at client (%v): %v\n", client, err)
@@ -79,8 +88,9 @@ func handleClient(client net.Conn) {
 		log.Fatal(err)
 	}
 
+	// TODONEXT: MOVE THE OUTGOING CONNECTION TO AFTER TX START
 	// open outgoing connection
-	addr, err := net.ResolveTCPAddr("tcp", SERVER)
+	addr, err := net.ResolveTCPAddr("tcp", config.ProxyTo)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -120,9 +130,22 @@ func handleClient(client net.Conn) {
 		log.Fatal(err)
 	}
 	logMessages("CLIENT", buf[:n])
-	_, err = server.Write(buf[:n])
+
+	// XXXXX -- test proxy auth
+	authHost, err := config.RoutingTable.NextReader()
 	if err != nil {
 		log.Fatal(err)
+	}
+	_, err = authClient(buf[:n], "tcp", authHost)
+	if err != nil {
+		log.Fatal(err)
+	}
+	// TODO: actually care about the result :-)
+	// XXXXX
+
+	_, err = server.Write(buf[:n])
+	if err != nil {
+		log.Fatalf("failed to write auth bytes to server: %s\n", err.Error())
 	}
 	// zero buf to drop credentials
 	for i, _ := range buf {
@@ -131,7 +154,7 @@ func handleClient(client net.Conn) {
 	// get server response to auth
 	n, err = server.Read(buf)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("failed to read auth response from server: %s\n", err.Error())
 	}
 	logMessages("SERVER", buf[:n])
 	_, err = client.Write(buf[:n])
@@ -163,8 +186,14 @@ func handleClient(client net.Conn) {
 	clientChan := make(chan bool, 1)
 	serverChan := make(chan bool, 1)
 
-	go splice(client, server, "CLIENT", clientChan)
-	go splice(server, client, "SERVER", serverChan)
+	if config.Debug {
+		go spliceDebug(server, client, "CLIENT", clientChan)
+		go spliceDebug(client, server, "SERVER", serverChan)
+
+	} else {
+		go splice(server, client, "CLIENT", clientChan)
+		go splice(client, server, "SERVER", serverChan)
+	}
 
 	for {
 		select {
@@ -180,21 +209,44 @@ func handleClient(client net.Conn) {
 	log.Println("Client dead.")
 }
 
+type Config struct {
+	Debug           bool
+	BindOn, ProxyTo string
+	RoutingTable    *router.RoutingTable
+}
+
 func main() {
+	var debug bool
+	var bindOn string
+	var proxyTo string
+
+	flag.BoolVar(&debug, "debug", false, "enable debug logging for traffic")
+	flag.StringVar(&bindOn, "bind", "localhost:8888", "host/port to bind to")
+	flag.StringVar(&proxyTo, "remote", "alpine:7687", "remote proxy target")
+	flag.Parse()
+
+	config := Config{debug, bindOn, proxyTo, router.NewRoutingTable()}
+
+	// hardcode routing table for now
+	config.RoutingTable.ReplaceWriters([]string{"alpine:7687"})
+	config.RoutingTable.ReplaceReaders([]string{"alpine:7687"})
+
 	log.Println("Starting bolt-proxy...")
 	defer log.Println("finished.")
 
-	listener, err := net.Listen("tcp", "localhost:8888")
+	listener, err := net.Listen("tcp", config.BindOn)
 	if err != nil {
 		log.Fatal(err)
 	}
+	log.Printf("Listening on %s\n", config.BindOn)
+
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			log.Printf("error: %v\n", err)
 		} else {
 			log.Printf("got connection %v\n", conn)
-			go handleClient(conn)
+			go handleClient(conn, config)
 		}
 	}
 }

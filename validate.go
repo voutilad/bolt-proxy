@@ -63,7 +63,7 @@ func ValidateHandshake(client, server []byte) ([]byte, error) {
 // useful tiny map in a byte array. As such it does not tell you where that
 // map ends in the array!
 func parseTinyMap(buf []byte) (map[string][]byte, error) {
-	log.Printf("debug: %#v\n", buf)
+	//	log.Printf("tinymap debug: %#v\n", buf)
 
 	if buf == nil {
 		panic("cannot parse nil byte array for structs")
@@ -103,14 +103,18 @@ func parseTinyMap(buf []byte) (map[string][]byte, error) {
 			valueSize = int(buf[pos] & 0xf)
 			pos++
 		} else if buf[pos]>>4 == 0xd {
+			// next 4 bits encodes how many upcoming bytes encode
+			// the fill string length
 			readAhead := 1 << int(buf[pos]&0xf)
 			pos++
 
-			valueBytes := append([]byte{buf[pos] & 0xf}, buf[pos+1:pos+readAhead]...)
-			valueSize = int(binary.BigEndian.Uint32(valueBytes))
+			// extract string length doing some sloppy slicing,
+			// uses assumption max is 64 bit length
+			valueBytes := buf[pos : pos+readAhead]
+			valueBytes = append(make([]byte, 8), valueBytes...)
+			valueSize = int(binary.BigEndian.Uint64(valueBytes[len(valueBytes)-8:]))
 			pos = pos + readAhead
 		} else {
-			log.Printf("XXX bad value type? %#v\n", buf[pos])
 			return nil, errors.New("found non-tiny-string or non-string value in tiny map!")
 		}
 
