@@ -14,8 +14,10 @@ of network trickery required usually leads to suffering.
 ## Known Pain I'm Trying to Alleviate
 
 1. Mixed internal/external access to Neo4j in K8s is extremely painful
-   due to having to pick a single advertised address.
-2. Exposing all Neo4j pods in K8s with all individual IPs is painful.
+   due to having to pick a single advertised address type (internal
+   vs. external).
+2. Exposing all Neo4j pods in K8s with all individual IPs is painful
+   for k8s amateurs, of which most of us are.
 
 ## My Hypothesis on What Might Help
 
@@ -26,6 +28,16 @@ of network trickery required usually leads to suffering.
 3. With the proper protocol-aware protocol design, it should be
    possible to deploy this bolt-proxy on the edge and keep the Neo4j
    cluster configured for just internal k8s networking (which is easy).
+
+## Expected Limitations
+
+1. Bolt protocol auth happens before the client declares their
+   intention (read vs. write transaction), so there will probably be
+   funny business related to auth'ing a client in one connection, but
+   then mapping that client onto a new connection to the proper
+   database reader or writer instance.
+
+2. Yes, another point of failure. Whatever.
 
 # Usage
 
