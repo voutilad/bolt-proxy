@@ -35,23 +35,12 @@ func logMessages(who string, data []byte) {
 //
 // If finished without error, send a "true" flag on the provided channel.
 func splice(w, r net.Conn, name string, done chan<- bool) {
-	n, err := io.Copy(w, r)
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.Printf("finished splicing %s, xfering %d bytes\n", name, n)
-	done <- true
-}
-
-// Like splice(), but read and write data using a userland buffer while
-// logging Bolt messages seen along the way.
-func spliceDebug(w, r net.Conn, name string, done chan<- bool) {
 	buf := make([]byte, 4*1024)
 	for {
 		n, err := r.Read(buf)
 		if err != nil {
 			if err == io.EOF {
-				log.Println("EOF detected for ", name)
+				log.Println("EOF detected for", name)
 				break
 			}
 			log.Fatalf("Read failure on %s splice: %s\n", name, err.Error())
@@ -186,14 +175,8 @@ func handleClient(client net.Conn, config Config) {
 	clientChan := make(chan bool, 1)
 	serverChan := make(chan bool, 1)
 
-	if config.Debug {
-		go spliceDebug(server, client, "CLIENT", clientChan)
-		go spliceDebug(client, server, "SERVER", serverChan)
-
-	} else {
-		go splice(server, client, "CLIENT", clientChan)
-		go splice(client, server, "SERVER", serverChan)
-	}
+	go splice(server, client, "CLIENT", clientChan)
+	go splice(client, server, "SERVER", serverChan)
 
 	for {
 		select {
