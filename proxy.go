@@ -8,7 +8,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/voutilad/bolt-proxy/router"
+	"github.com/voutilad/bolt-proxy/backend"
 )
 
 // Try to split a buffer into Bolt messages based on double zero-byte delims
@@ -121,11 +121,12 @@ func handleClient(client net.Conn, config Config) {
 	logMessages("CLIENT", buf[:n])
 
 	// XXXXX -- test proxy auth
-	authHost, err := config.RoutingTable.NextReader()
+	defaultDb := config.BackendClient.RoutingTable.DefaultDb()
+	authHost, err := config.BackendClient.RoutingTable.ReadersFor(defaultDb)
 	if err != nil {
 		log.Fatal(err)
 	}
-	_, err = authClient(buf[:n], "tcp", authHost)
+	_, err = authClient(buf[:n], "tcp", authHost[0])
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -195,7 +196,8 @@ func handleClient(client net.Conn, config Config) {
 type Config struct {
 	Debug           bool
 	BindOn, ProxyTo string
-	RoutingTable    *router.RoutingTable
+	User, Password  string
+	BackendClient   *backend.Backend
 }
 
 func main() {
@@ -208,11 +210,21 @@ func main() {
 	flag.StringVar(&proxyTo, "remote", "alpine:7687", "remote proxy target")
 	flag.Parse()
 
-	config := Config{debug, bindOn, proxyTo, router.NewRoutingTable()}
+	config := Config{debug, bindOn, proxyTo, "neo4j", "password", nil}
 
-	// hardcode routing table for now
-	config.RoutingTable.ReplaceWriters([]string{"alpine:7687"})
-	config.RoutingTable.ReplaceReaders([]string{"alpine:7687"})
+	// messy mishmash of backend/frontend datatypes :-(
+	backendConfig := backend.Config{
+		Hosts:    []string{config.ProxyTo},
+		Username: config.User,
+		Password: config.Password,
+		AuthTtl:  time.Duration(5) * time.Minute,
+	}
+	backendClient := backend.NewBackend(backendConfig)
+	config.BackendClient = &backendClient
+	err := backend.UpdateRoutingTable(config.BackendClient.Driver, config.BackendClient.RoutingTable)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	log.Println("Starting bolt-proxy...")
 	defer log.Println("finished.")
