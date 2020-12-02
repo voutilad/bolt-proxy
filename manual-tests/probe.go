@@ -8,19 +8,14 @@ import (
 )
 
 func main() {
-
-	log.Println(time.Duration(300) * time.Second)
-	config := backend.Config{[]string{"alpine:7687"}, "neo4j", "password", time.Duration(5) * time.Minute}
-
-	b := backend.NewBackend(config)
-
-	timer := time.NewTicker(5 * time.Second)
+	b, err := backend.NewBackend("neo4j", "password", "alpine:7687")
+	if err != nil {
+		log.Fatal(err)
+	}
+	var rt *backend.RoutingTable
 	for {
-		err := backend.UpdateRoutingTable(b.Driver, b.RoutingTable)
-		if err != nil {
-			log.Fatal(err)
-		}
-		log.Println(b.RoutingTable)
-		<-timer.C
+		rt = b.RoutingTable()
+		log.Printf("got routing table: %s\n", rt)
+		time.Sleep(2 * time.Minute)
 	}
 }

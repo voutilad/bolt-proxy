@@ -2,12 +2,115 @@ package backend
 
 import (
 	"errors"
+	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/neo4j/neo4j-go-driver/v4/neo4j"
 )
 
+// Modeled after time.Ticker, a Monitor will keep tabs on the Neo4j routing
+// table behind the scenes. It auto-adjusts the refresh interval to match
+// the server's declared TTL recommendation.
+//
+// As it creates new RoutingTable instances on the heap, it will put pointers
+// to new instances into the channel C. (Similar to how time.Ticker puts the
+// current time into its channel.)
+//
+// Known issue: if the channel isn't read, new values drop. This meas the value
+// could be stale and needs to be checked.
+type Monitor struct {
+	C      <-chan *RoutingTable
+	halt   chan bool
+	driver *neo4j.Driver
+}
+
+// Lots of funny business to handle
+func newConfigurer(hosts []string) func(c *neo4j.Config) {
+	return func(c *neo4j.Config) {
+		c.AddressResolver = func(_ neo4j.ServerAddress) []neo4j.ServerAddress {
+			addrs := make([]neo4j.ServerAddress, len(hosts))
+			for i, host := range hosts {
+				parts := strings.Split(host, ":")
+				if len(parts) != 2 {
+					panic("invalid host: " + host)
+				}
+				addrs[i] = neo4j.NewServerAddress(parts[0], parts[1])
+			}
+			return addrs
+		}
+		c.UserAgent = "bolt-proxy/v0"
+	}
+}
+
+func NewMonitor(user, password string, hosts ...string) (*Monitor, error) {
+	c := make(chan *RoutingTable, 1)
+	h := make(chan bool, 1)
+
+	if len(hosts) == 0 {
+		hosts[0] = "localhost:7687"
+	}
+
+	// Try immediately to connect to Neo4j
+	auth := neo4j.BasicAuth(user, password, "")
+	uri := fmt.Sprintf("bolt://%s", hosts[0])
+	driver, err := neo4j.NewDriver(uri, auth, newConfigurer(hosts))
+
+	// Get the first routing table and ttl details
+	rt, err := getNewRoutingTable(&driver)
+	if err != nil {
+		log.Fatal(err)
+	}
+	c <- rt
+
+	monitor := Monitor{c, h, &driver}
+	go func() {
+		// preset the initial ticker to use the first ttl measurement
+		ticker := time.NewTicker(rt.Ttl)
+		for {
+			select {
+			case <-ticker.C:
+				rt, err := getNewRoutingTable(monitor.driver)
+				if err != nil {
+					log.Fatal(err)
+				}
+				ticker.Reset(rt.Ttl)
+
+				// empty the channel and put the new value in
+				// this looks odd, but even though it's racy,
+				// it should be racy in a safe way since it
+				// doesn't matter if another go routine takes
+				// the value first
+				select {
+				case <-c:
+				default:
+				}
+				select {
+				case c <- rt:
+				default:
+					panic("monitor channel full")
+				}
+			case <-h:
+				ticker.Stop()
+				log.Println("monitor stopped")
+			case <-time.After(5 * rt.Ttl):
+				log.Fatalf("monitor timeout reached of 5 x %v\n", rt.Ttl)
+			}
+		}
+	}()
+
+	return &monitor, nil
+}
+
+func (m *Monitor) Stop() {
+	select {
+	case (*m).halt <- true:
+	default:
+	}
+}
+
+// local data structure for passing the raw routing table details
 type table struct {
 	db      string
 	ttl     time.Duration
@@ -57,7 +160,7 @@ func queryDbNames(s neo4j.Session) ([]string, error) {
 		}
 		names[i] = name
 	}
-	log.Printf("found db names! %v\n", names)
+
 	return names, nil
 }
 
@@ -138,22 +241,21 @@ func queryRoutingTable(tx neo4j.Transaction, names []string) (interface{}, error
 	return tableMap, nil
 }
 
-func UpdateRoutingTable(driver *neo4j.Driver, rt *RoutingTable) error {
+func getNewRoutingTable(driver *neo4j.Driver) (*RoutingTable, error) {
 	session := (*driver).NewSession(neo4j.SessionConfig{})
 	defer session.Close()
 
 	names, err := queryDbNames(session)
 	if err != nil {
 		log.Println("error querying database names")
-		return err
+		return nil, err
 	}
 
 	result, err := session.ReadTransaction(func(tx neo4j.Transaction) (interface{}, error) {
 		return queryRoutingTable(tx, names)
 	})
 	if err != nil {
-		log.Println("error retrieving updated routing table")
-		return err
+		log.Fatal(err)
 	}
 
 	tableMap, ok := result.(map[string]table)
@@ -161,14 +263,28 @@ func UpdateRoutingTable(driver *neo4j.Driver, rt *RoutingTable) error {
 		panic(err)
 	}
 
-	log.Printf("[DEBUG] tableMap: %v\n", tableMap)
-
-	// XXX: this is sloppy an inefficient...needs some rework
-	for db, t := range tableMap {
-		rt.SetRoutes(db, t.readers, t.writers)
-		rt.SetTtl(t.ttl)
+	// build the new routing table instance
+	// TODO: clean this up...seems smelly
+	readers := make(map[string][]string)
+	writers := make(map[string][]string)
+	rt := RoutingTable{
+		DefaultDb: names[0],
+		readers:   readers,
+		writers:   writers,
 	}
-	rt.defaultDb = names[0]
+	for db, t := range tableMap {
+		r := make([]string, len(t.readers))
+		copy(r, t.readers)
+		w := make([]string, len(t.writers))
+		copy(w, t.writers)
+		rt.readers[db] = r
+		rt.writers[db] = w
 
-	return nil
+		// yes, this is redundant...
+		rt.Ttl = t.ttl
+	}
+
+	log.Printf("updated routing table: %s\n", &rt)
+
+	return &rt, nil
 }

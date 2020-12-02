@@ -57,12 +57,20 @@ func splice(w, r net.Conn, name string, done chan<- bool) {
 }
 
 // Primary Client connection handler
-func handleClient(client net.Conn, config Config) {
+func handleClient(client net.Conn, backend *backend.Backend) {
 	defer client.Close()
 	buf := make([]byte, 512)
 
+	// XXX For now just grab the first default db writer
+	rt := backend.RoutingTable()
+	writers, err := rt.WritersFor(rt.DefaultDb)
+	if err != nil {
+		log.Fatal(err)
+	}
+	host := writers[0]
+
 	// peek and check for magic and handshake
-	_, err := client.Read(buf[:20])
+	_, err = client.Read(buf[:20])
 	if err != nil {
 		log.Printf("error peeking at client (%v): %v\n", client, err)
 		return
@@ -79,7 +87,7 @@ func handleClient(client net.Conn, config Config) {
 
 	// TODONEXT: MOVE THE OUTGOING CONNECTION TO AFTER TX START
 	// open outgoing connection
-	addr, err := net.ResolveTCPAddr("tcp", config.ProxyTo)
+	addr, err := net.ResolveTCPAddr("tcp", host)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -121,12 +129,7 @@ func handleClient(client net.Conn, config Config) {
 	logMessages("CLIENT", buf[:n])
 
 	// XXXXX -- test proxy auth
-	defaultDb := config.BackendClient.RoutingTable.DefaultDb()
-	authHost, err := config.BackendClient.RoutingTable.ReadersFor(defaultDb)
-	if err != nil {
-		log.Fatal(err)
-	}
-	_, err = authClient(buf[:n], "tcp", authHost[0])
+	_, err = authClient(buf[:n], "tcp", host)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -193,47 +196,31 @@ func handleClient(client net.Conn, config Config) {
 	log.Println("Client dead.")
 }
 
-type Config struct {
-	Debug           bool
-	BindOn, ProxyTo string
-	User, Password  string
-	BackendClient   *backend.Backend
-}
-
 func main() {
-	var debug bool
 	var bindOn string
 	var proxyTo string
+	var username, password string
 
-	flag.BoolVar(&debug, "debug", false, "enable debug logging for traffic")
-	flag.StringVar(&bindOn, "bind", "localhost:8888", "host/port to bind to")
-	flag.StringVar(&proxyTo, "remote", "alpine:7687", "remote proxy target")
+	flag.StringVar(&bindOn, "bind", "localhost:8888", "host:port to bind to")
+	flag.StringVar(&proxyTo, "host", "alpine:7687", "remote neo4j host")
+	flag.StringVar(&username, "user", "neo4j", "Neo4j username")
+	flag.StringVar(&password, "pass", "", "Neo4j password")
 	flag.Parse()
 
-	config := Config{debug, bindOn, proxyTo, "neo4j", "password", nil}
-
-	// messy mishmash of backend/frontend datatypes :-(
-	backendConfig := backend.Config{
-		Hosts:    []string{config.ProxyTo},
-		Username: config.User,
-		Password: config.Password,
-		AuthTtl:  time.Duration(5) * time.Minute,
-	}
-	backendClient := backend.NewBackend(backendConfig)
-	config.BackendClient = &backendClient
-	err := backend.UpdateRoutingTable(config.BackendClient.Driver, config.BackendClient.RoutingTable)
+	// ---------- BACK END
+	log.Println("Starting bolt-proxy back-end...")
+	backend, err := backend.NewBackend(username, password, proxyTo)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	log.Println("Starting bolt-proxy...")
-	defer log.Println("finished.")
-
-	listener, err := net.Listen("tcp", config.BindOn)
+	// ---------- FRONT END
+	log.Println("Starting bolt-proxy front-end...")
+	listener, err := net.Listen("tcp", bindOn)
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("Listening on %s\n", config.BindOn)
+	log.Printf("Listening on %s\n", bindOn)
 
 	for {
 		conn, err := listener.Accept()
@@ -241,7 +228,7 @@ func main() {
 			log.Printf("error: %v\n", err)
 		} else {
 			log.Printf("got connection %v\n", conn)
-			go handleClient(conn, config)
+			go handleClient(conn, backend)
 		}
 	}
 }
