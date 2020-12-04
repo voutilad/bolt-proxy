@@ -7,11 +7,11 @@ import (
 )
 
 // Mode of a Bolt Transaction for determining cluster routing
-type TxMode string
+type Mode string
 
 const (
-	ReadMode  TxMode = "READ"
-	WriteMode        = "WRITE"
+	ReadMode  Mode = "READ"
+	WriteMode      = "WRITE"
 )
 
 // Inspect bytes for valid Bolt Magic pattern, returning true if found.
@@ -51,11 +51,11 @@ func ValidateHandshake(client, server []byte) ([]byte, error) {
 	return []byte{}, errors.New("couldn't find handshake match!")
 }
 
-// Try to find and validate the TxMode for some given bytes, returning
-// the TxMode if found or if valid looking Bolt chatter. Otherwise,
+// Try to find and validate the Mode for some given bytes, returning
+// the Mode if found or if valid looking Bolt chatter. Otherwise,
 // returns nil and an error.
-func ValidateMode(buf []byte) (TxMode, error) {
-	if ParseBoltMsg(buf) == BeginMsg {
+func ValidateMode(buf []byte) (Mode, error) {
+	if IdentifyType(buf) == BeginMsg {
 		tinyMap, _, err := ParseTinyMap(buf[4:])
 		if err != nil {
 			log.Fatal(err)

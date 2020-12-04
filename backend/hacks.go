@@ -53,7 +53,7 @@ func authClient(auth []byte, network, address string) (net.Conn, error) {
 		return nil, err
 	}
 
-	msg := bolt.ParseBoltMsg(buf)
+	msg := bolt.IdentifyType(buf)
 	if msg == bolt.FailureMsg {
 		// see if we can extract the error message
 		r, _, err := bolt.ParseTinyMap(buf[4:n])
