@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/voutilad/bolt-proxy/backend"
+	"github.com/voutilad/bolt-proxy/bolt"
 )
 
 // Try to split a buffer into Bolt messages based on double zero-byte delims
@@ -16,8 +17,8 @@ func logMessages(who string, data []byte) {
 	// then, deal with N-number of bolt messages
 	for i, buf := range bytes.Split(data, []byte{0x00, 0x00}) {
 		if len(buf) > 0 {
-			msgType := ParseBoltMsg(buf)
-			if msgType != HelloMsg {
+			msgType := bolt.ParseBoltMsg(buf)
+			if msgType != bolt.HelloMsg {
 				log.Printf("[%s]{%d}: %s %#v\n", who, i, msgType, buf)
 			} else {
 				// don't log HELLO payload...it has credentials
@@ -57,20 +58,12 @@ func splice(w, r net.Conn, name string, done chan<- bool) {
 }
 
 // Primary Client connection handler
-func handleClient(client net.Conn, backend *backend.Backend) {
+func handleClient(client net.Conn, b *backend.Backend) {
 	defer client.Close()
 	buf := make([]byte, 512)
 
-	// XXX For now just grab the first default db writer
-	rt := backend.RoutingTable()
-	writers, err := rt.WritersFor(rt.DefaultDb)
-	if err != nil {
-		log.Fatal(err)
-	}
-	host := writers[0]
-
 	// peek and check for magic and handshake
-	_, err = client.Read(buf[:20])
+	_, err := client.Read(buf[:20])
 	if err != nil {
 		log.Printf("error peeking at client (%v): %v\n", client, err)
 		return
@@ -80,37 +73,14 @@ func handleClient(client net.Conn, backend *backend.Backend) {
 	magic, handshake := buf[:4], buf[4:20]
 	log.Printf("magic: %#v, handshake: %#v\n", magic, handshake)
 
-	valid, err := ValidateMagic(magic)
+	valid, err := bolt.ValidateMagic(magic)
 	if !valid {
 		log.Fatal(err)
 	}
 
-	// TODONEXT: MOVE THE OUTGOING CONNECTION TO AFTER TX START
-	// open outgoing connection
-	addr, err := net.ResolveTCPAddr("tcp", host)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	server, err := net.DialTCP("tcp", nil, addr)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer server.Close()
-
-	// immediately relay the magic
-	_, err = server.Write(buf[:20])
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.Println("wrote magic to server")
-
-	// validate server handshake response
-	_, err = server.Read(buf[:4])
-	log.Printf("SERVER Handshake: %#v\n", buf[:4])
-
-	// server wrote to first 4 bytes, so look to for client match
-	match, err := ValidateHandshake(handshake, buf[:4])
+	// XXX hardcoded to bolt 4.2 for now
+	hardcodedVersion := []byte{0x0, 0x0, 0x02, 0x04}
+	match, err := bolt.ValidateHandshake(handshake, hardcodedVersion)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -121,39 +91,26 @@ func handleClient(client net.Conn, backend *backend.Backend) {
 	log.Printf("handshake complete: %#v\n", match)
 
 	// intercept HELLO message for authentication
-	// TODO: not sure what to do here...just intercept in future?
 	n, err := client.Read(buf)
 	if err != nil {
 		log.Fatal(err)
 	}
 	logMessages("CLIENT", buf[:n])
 
-	// XXXXX -- test proxy auth
-	_, err = authClient(buf[:n], "tcp", host)
+	// get backend connection
+	log.Println("trying to auth...")
+	server, err := b.Authenticate(buf[:n])
 	if err != nil {
 		log.Fatal(err)
 	}
-	// TODO: actually care about the result :-)
-	// XXXXX
 
-	_, err = server.Write(buf[:n])
-	if err != nil {
-		log.Fatalf("failed to write auth bytes to server: %s\n", err.Error())
-	}
-	// zero buf to drop credentials
-	for i, _ := range buf {
-		buf[i] = 0
-	}
-	// get server response to auth
-	n, err = server.Read(buf)
-	if err != nil {
-		log.Fatalf("failed to read auth response from server: %s\n", err.Error())
-	}
-	logMessages("SERVER", buf[:n])
-	_, err = client.Write(buf[:n])
+	// TODO: send our own Success Message
+	_, err = client.Write([]byte{0x0, 0x2b, 0xb1, 0x70, 0xa2, 0x86, 0x73, 0x65, 0x72, 0x76, 0x65, 0x72, 0x8b, 0x4e, 0x65, 0x6f, 0x34, 0x6a, 0x2f, 0x34, 0x2e,
+		0x32, 0x2e, 0x30, 0x8d, 0x63, 0x6f, 0x6e, 0x6e, 0x65, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x5f, 0x69, 0x64, 0x86, 0x62, 0x6f, 0x6c, 0x74, 0x2d, 0x34, 0x00, 0x00})
 	if err != nil {
 		log.Fatal(err)
 	}
+	log.Println("sent login Success to client")
 
 	// wait for the client to make the first move so we can react
 	n, err = client.Read(buf)
@@ -166,7 +123,7 @@ func handleClient(client net.Conn, backend *backend.Backend) {
 	}
 	logMessages("CLIENT", buf[:n])
 
-	mode, err := ValidateMode(buf[:n])
+	mode, err := bolt.ValidateMode(buf[:n])
 	log.Printf("XXX: TRANSACTION MODE DETECTED = %s\n", mode)
 
 	// flush the buffer to the server before splicing

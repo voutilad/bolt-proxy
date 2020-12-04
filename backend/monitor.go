@@ -271,6 +271,7 @@ func getNewRoutingTable(driver *neo4j.Driver) (*RoutingTable, error) {
 		DefaultDb: names[0],
 		readers:   readers,
 		writers:   writers,
+		CreatedAt: time.Now(),
 	}
 	for db, t := range tableMap {
 		r := make([]string, len(t.readers))

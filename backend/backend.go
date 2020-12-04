@@ -1,13 +1,14 @@
 package backend
 
 import (
-	"container/ring"
 	"log"
+	"net"
 	"time"
+
+	"github.com/voutilad/bolt-proxy/bolt"
 )
 
 type Backend struct {
-	sessions     map[string][]Session
 	monitor      *Monitor
 	routingTable *RoutingTable
 }
@@ -18,9 +19,8 @@ func NewBackend(username, password string, hosts ...string) (*Backend, error) {
 		return nil, err
 	}
 	routingTable := <-monitor.C
-	sessions := make(map[string][]Session)
 
-	return &Backend{sessions, monitor, routingTable}, nil
+	return &Backend{monitor, routingTable}, nil
 }
 
 func (b *Backend) RoutingTable() *RoutingTable {
@@ -28,6 +28,7 @@ func (b *Backend) RoutingTable() *RoutingTable {
 		panic("attempting to use uninitialized BackendClient")
 	}
 
+	log.Println("checking routing table...")
 	if b.routingTable.Expired() {
 		select {
 		case rt := <-b.monitor.C:
@@ -37,15 +38,25 @@ func (b *Backend) RoutingTable() *RoutingTable {
 		}
 	}
 
+	log.Println("using routing table")
 	return b.routingTable
 }
 
-type Session struct {
-	principal   string
-	credentials []byte
-	pool        *Pool
-}
+// For now, try auth'ing to the default db "Writer"
+func (b *Backend) Authenticate(hello []byte) (net.Conn, error) {
 
-type Pool struct {
-	readers, writers *ring.Ring
+	// TODO: clean up this api...push the dirt into Bolt package
+	msg, _, err := bolt.ParseTinyMap(hello[4:])
+	principal := msg["principal"].(string)
+
+	log.Println("found principal:", principal)
+
+	// refresh routing table
+	// TODO: this api seems backwards...push down into table?
+	rt := b.RoutingTable()
+	writers, _ := rt.WritersFor(rt.DefaultDb)
+
+	log.Printf("trying to auth %s to backend host %s\n", principal, writers[0])
+	conn, err := authClient(hello, "tcp", writers[0])
+	return conn, err
 }

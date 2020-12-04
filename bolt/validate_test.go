@@ -1,4 +1,4 @@
-package main
+package bolt
 
 import (
 	"testing"
@@ -6,32 +6,27 @@ import (
 
 func TestParsingReadMode(t *testing.T) {
 	// BEGIN { "mode": "r" }
-	buf := []byte{0xa1, 0x84, 0x6d, 0x6f, 0x64, 0x65, 0x81, 0x72, 0x0, 0x0}
+	buf := []byte{0x00, 0x0a, 0xb1, 0x11, 0xa1, 0x84, 0x6d, 0x6f, 0x64, 0x65, 0x81, 0x72, 0x0, 0x0}
 
-	result, err := parseTinyMap(buf)
+	mode, err := ValidateMode(buf)
 	if err != nil {
-		t.Fatalf("failed to parse read transaction's tiny map: %v", err)
+		t.Fatalf("failed to parse mode: %v", err)
 	}
-	val, ok := result["mode"]
-	if !ok {
-		t.Fatalf("failed to find a 'mode' key in tiny map")
-	}
-
-	if len(val) != 1 || val[0] != 'r' {
-		t.Fatalf("mode value isn't a single byte 'r'")
+	if mode != ReadMode {
+		t.Fatalf("expected to see a read mode")
 	}
 }
 
 func TestParsingEmptyMode(t *testing.T) {
 	// BEGIN { }
-	buf := []byte{0xa0, 0x0, 0x0}
+	buf := []byte{0x00, 0x03, 0xb1, 0x11, 0xa0, 0x0, 0x0}
 
-	result, err := parseTinyMap(buf)
+	mode, err := ValidateMode(buf)
 	if err != nil {
-		t.Fatalf("failed to parse read transaction's tiny map: %v", err)
+		t.Fatalf("failed to parse mode: %v", err)
 	}
-	if len(result) != 0 {
-		t.Fatalf("expected empty tiny map")
+	if mode != WriteMode {
+		t.Fatalf("expected to see a write mode")
 	}
 }
 
@@ -55,7 +50,7 @@ func TestParsingFailure(t *testing.T) {
 		0x66, 0x61, 0x69, 0x6c, 0x75, 0x72, 0x65, 0x2e,
 		0x0, 0x0}
 
-	result, err := parseTinyMap(buf)
+	result, _, err := ParseTinyMap(buf)
 	if err != nil {
 		t.Fatal("failed to parse tiny map")
 	}
@@ -63,8 +58,11 @@ func TestParsingFailure(t *testing.T) {
 	if !ok {
 		t.Fatal("failed to find 'message' in tiny map")
 	}
-	s := string(val)
-	if s != "The client is unauthorized due to authentication failure." {
+	msg, ok := val.(string)
+	if !ok {
+		t.Fatalf("expected a string value, saw: %v", val)
+	}
+	if msg != "The client is unauthorized due to authentication failure." {
 		t.Fatal("unexpected message:", val)
 	}
 }

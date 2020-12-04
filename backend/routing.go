@@ -15,7 +15,8 @@ type RoutingTable struct {
 }
 
 func (rt *RoutingTable) Expired() bool {
-	return rt.CreatedAt.Add(rt.Ttl).After(time.Now())
+	now := time.Now()
+	return rt.CreatedAt.Add(rt.Ttl).Before(now)
 }
 
 func (rt *RoutingTable) String() string {
