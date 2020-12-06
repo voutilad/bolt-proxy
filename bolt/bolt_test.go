@@ -41,6 +41,39 @@ func TestParsingTinyInt(t *testing.T) {
 	}
 }
 
+func TestParsingInt(t *testing.T) {
+	type test struct {
+		buf          []byte
+		expectedVal  int
+		expectedSize int
+	}
+
+	tests := []test{
+		test{[]byte{0xc8, 0x45}, 69, 2},
+		test{[]byte{0xc8, 0xbb}, -69, 2},
+		test{[]byte{0xc9, 0xfa, 0xc7}, -1337, 3},
+		test{[]byte{0xc9, 0x14, 0x08}, 5128, 3},
+		test{[]byte{0xca, 0x6b, 0x4b, 0xb4, 0x40}, 1800123456, 5},
+		test{[]byte{0xca, 0xff, 0xfe, 0x1d, 0xc0}, -123456, 5},
+		test{[]byte{0xcb, 0xff, 0xff, 0xa5, 0x0c, 0xef, 0x85, 0xc0, 0x01},
+			-99999999999999, 9},
+		test{[]byte{0xcb, 0x00, 0x00, 0x5a, 0xf3, 0x10, 0x7a, 0x3f, 0xff},
+			99999999999999, 9},
+	}
+
+	for _, test := range tests {
+		val, n, err := ParseInt(test.buf)
+		if err != nil {
+			t.Fatalf("failed test %#v: %s\n", test, err)
+		}
+		if val != test.expectedVal || n != test.expectedSize {
+			t.Fatalf("expected (%d, %d), got (%d, %d)\n",
+				test.expectedVal, test.expectedSize,
+				val, n)
+		}
+	}
+}
+
 func TestParsingTinyString(t *testing.T) {
 	val, n, err := ParseTinyString([]byte{0x87,
 		// "address"

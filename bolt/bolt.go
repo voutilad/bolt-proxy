@@ -233,6 +233,32 @@ func ParseTinyInt(b byte) (int, error) {
 	return int(b), nil
 }
 
+// Parse a packed Int
+func ParseInt(buf []byte) (int, int, error) {
+	if len(buf) < 2 || buf[0]>>4 != 0xc {
+		return 0, 0, errors.New("can't parse int, invalid byte buf")
+	}
+
+	var i, n int
+
+	switch buf[0] {
+	case 0xc8:
+		i = int(int8(buf[1]))
+		n = 2
+	case 0xc9:
+		i = int(int16(binary.BigEndian.Uint16(buf[1:3])))
+		n = 3
+	case 0xca:
+		i = int(int32(binary.BigEndian.Uint32(buf[1:5])))
+		n = 5
+	case 0xcb:
+		i = int(int64(binary.BigEndian.Uint64(buf[1:9])))
+		n = 9
+	}
+
+	return i, n, nil
+}
+
 // Parse a TinyString from a byte slice, returning the string (if valid) and
 // the number of bytes processed from the slice (including the 0x80 prefix).
 //
@@ -310,6 +336,13 @@ func ParseTinyArray(buf []byte) ([]interface{}, int, error) {
 			case 3:
 				array[i] = true
 				pos++
+			case 0x8, 0x9, 0xa, 0xb:
+				val, n, err := ParseInt(buf[pos:])
+				if err != nil {
+					return array, pos, err
+				}
+				array[i] = val
+				pos = pos + n
 			}
 		case 0xd: // regular string
 			val, n, err := ParseString(buf[pos:])
