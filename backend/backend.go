@@ -48,7 +48,11 @@ func (b *Backend) Authenticate(hello *bolt.Message) (bolt.BoltConn, error) {
 	}
 
 	// TODO: clean up this api...push the dirt into Bolt package
-	msg, _, err := bolt.ParseTinyMap(hello.Data[4:])
+	msg, pos, err := bolt.ParseTinyMap(hello.Data[4:])
+	if err != nil {
+		log.Printf("XXX pos: %d, hello map: %#v\n", pos, msg)
+		panic(err)
+	}
 	principal := msg["principal"].(string)
 
 	log.Println("found principal:", principal)

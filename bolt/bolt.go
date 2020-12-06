@@ -31,6 +31,7 @@ const (
 	RollbackMsg      = "ROLLBACK"
 	UnknownMsg       = "?UNKNOWN?"
 	NopMsg           = "NOP"
+	ChunkedMsg       = "CHUNKED" // not a true bolt message
 )
 
 // Parse a byte into the corresponding Bolt message Type
@@ -97,7 +98,7 @@ func Parse(buf []byte) ([]Message, []byte, error) {
 }
 
 func LogMessage(who string, msg *Message) {
-	log.Printf("[%s] <%s>:\t%#v\n", who, msg.T, msg.Data)
+	log.Printf("[%s] <%s>:\t%#v\n%s\n", who, msg.T, msg.Data, msg.Data)
 }
 
 func LogMessages(who string, messages []Message) {
@@ -114,14 +115,7 @@ func IdentifyType(buf []byte) Type {
 		return NopMsg
 	}
 
-	// Some larger, usually non-Record messages, start with
-	// a zero byte prefix
-	if buf[0] == 0x0 {
-		return TypeFromByte(buf[3])
-	}
-
-	// Otherwise the message byte is after the message size
-	return TypeFromByte(buf[2])
+	return TypeFromByte(buf[3])
 }
 
 // Try parsing some bytes into a Packstream Tiny Map, returning it as a map
@@ -147,7 +141,7 @@ func ParseTinyMap(buf []byte) (map[string]interface{}, int, error) {
 
 	pos := 0
 	if buf[pos]>>4 != 0xa {
-		panic(fmt.Sprintf("XXX: buf[pos] = %#v\n", buf[pos]))
+		fmt.Sprintf("XXX: not a tiny map buf[pos] = %#v\n", buf[pos])
 		return result, pos, errors.New("bytes missing tiny-map prefix of 0xa")
 	}
 
@@ -207,6 +201,21 @@ func ParseTinyMap(buf []byte) (map[string]interface{}, int, error) {
 			}
 			result[name] = value
 			pos = pos + n
+		case 0xc: // floats, nil, and bools
+			nib := int(buf[pos] & 0xf)
+			switch nib {
+			case 0: // packed nil/null
+				result[name] = nil
+				pos++
+			case 1: // packed float
+				panic("can't do floats yet")
+			case 2:
+				result[name] = false
+				pos++
+			case 3:
+				result[name] = true
+				pos++
+			}
 		default:
 			errMsg := fmt.Sprintf("found unsupported encoding type: %#v\n", buf[pos])
 			return nil, pos, errors.New(errMsg)
@@ -287,6 +296,21 @@ func ParseTinyArray(buf []byte) ([]interface{}, int, error) {
 			}
 			array[i] = val
 			pos = pos + n
+		case 0xc:
+			nib := int(buf[pos] & 0xf)
+			switch nib {
+			case 0: // packed nil/null
+				array[i] = nil
+				pos++
+			case 1: // packed float
+				panic("can't do floats yet")
+			case 2:
+				array[i] = false
+				pos++
+			case 3:
+				array[i] = true
+				pos++
+			}
 		case 0xd: // regular string
 			val, n, err := ParseString(buf[pos:])
 			if err != nil {

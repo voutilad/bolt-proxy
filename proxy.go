@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"flag"
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -20,7 +19,7 @@ import (
 //
 // Before aborting, sends a bool via the provided done channel to
 // signal any waiting go routine.
-func splice(w, r bolt.BoltConn, name string, done chan<- bool) {
+func splice(w, r bolt.BoltConn, name string, reset chan bool, done chan<- bool) {
 	//buf := make([]byte, 4*1024)
 	finished := false
 
@@ -30,6 +29,7 @@ func splice(w, r bolt.BoltConn, name string, done chan<- bool) {
 			if err == io.EOF {
 				break
 			}
+			log.Println("PROBLEMS READING ", name)
 			panic(err)
 		}
 		bolt.LogMessage(name, message)
@@ -39,13 +39,12 @@ func splice(w, r bolt.BoltConn, name string, done chan<- bool) {
 			finished = true
 		case bolt.SuccessMsg:
 			success, _, err := bolt.ParseTinyMap(message.Data[4:])
-			if err != nil {
-				panic(err)
-			}
-			val, found := success["bookmark"]
-			if found {
-				log.Printf("got bookmark: %s\n", val)
-				finished = true
+			if err == nil {
+				val, found := success["bookmark"]
+				if found {
+					log.Printf("got bookmark: %s\n", val)
+					finished = true
+				}
 			}
 		}
 
@@ -56,7 +55,7 @@ func splice(w, r bolt.BoltConn, name string, done chan<- bool) {
 
 // Identify if a new connection is valid Bolt or Bolt-on-Websockets.
 // If so, pass it to the proper handler. Otherwise, close the connection.
-func handleConn(conn net.Conn, b *backend.Backend) {
+func handleClient(conn net.Conn, b *backend.Backend) {
 	defer conn.Close()
 
 	// XXX why 1024? I've observed long user-agents that make this
@@ -70,8 +69,27 @@ func handleConn(conn net.Conn, b *backend.Backend) {
 	}
 
 	if bytes.Equal(buf[:4], []byte{0x60, 0x60, 0xb0, 0x17}) {
+		// read bytes for handshake message
+		n, err := conn.Read(buf[:20])
+		if err != nil {
+			log.Println("error peeking at connection from", conn.RemoteAddr())
+			return
+		}
+
+		// XXX hardcoded to bolt 4.2 for now
+		hardcodedVersion := []byte{0x0, 0x0, 0x02, 0x04}
+		match, err := bolt.ValidateHandshake(buf[:n], hardcodedVersion)
+		if err != nil {
+			log.Fatal(err)
+		}
+		_, err = conn.Write(match)
+		if err != nil {
+			log.Fatal(err)
+		}
+
 		// regular bolt
-		handleClient(conn, b)
+		handleBoltConn(bolt.NewDirectConn(conn), b)
+
 	} else if bytes.Equal(buf[:4], []byte{0x47, 0x45, 0x54, 0x20}) {
 		// "GET ", so websocket? :-(
 		n, _ = conn.Read(buf[4:])
@@ -100,7 +118,6 @@ func handleConn(conn net.Conn, b *backend.Backend) {
 				conn.RemoteAddr(), err)
 			return
 		}
-		log.Printf("XXX [ws] got header: %v\n", header)
 		n, err := conn.Read(buf[:header.Length])
 		if err != nil {
 			log.Printf("failed to read payload from client %s\n",
@@ -108,12 +125,34 @@ func handleConn(conn net.Conn, b *backend.Backend) {
 			return
 		}
 		if header.Masked {
-			log.Println("unmasking payload")
 			ws.Cipher(buf[:n], header.Mask, 0)
-			header.Masked = false
 		}
-		log.Printf("GOT WS PAYLOAD: %#v\n", buf[:n])
+		// log.Printf("GOT WS PAYLOAD: %#v\n", buf[:n])
 
+		// we expect we can now do the initial Bolt handshake
+		magic, handshake := buf[:4], buf[4:20] // blaze it
+		valid, err := bolt.ValidateMagic(magic)
+		if !valid {
+			log.Fatal(err)
+		}
+
+		// Browser uses an older 4.1 driver?!
+		hardcodedVersion := []byte{0x0, 0x0, 0x1, 0x4}
+		match, err := bolt.ValidateHandshake(handshake, hardcodedVersion)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		log.Printf("XXX sending match back: %#v\n", match)
+		frame := ws.NewBinaryFrame(match)
+
+		log.Printf("XXX sending Frame: %#v\n", frame)
+		if err = ws.WriteFrame(conn, frame); err != nil {
+			log.Fatal(err)
+		}
+
+		// websocket bolt
+		handleBoltConn(bolt.NewWsConn(conn), b)
 	} else {
 		log.Printf("client %s is speaking gibberish: %#v\n",
 			conn.RemoteAddr(), buf[:4])
@@ -121,39 +160,17 @@ func handleConn(conn net.Conn, b *backend.Backend) {
 }
 
 // Primary Client connection handler
-func handleClient(client net.Conn, b *backend.Backend) {
-	buf := make([]byte, 1024)
-
-	// read bytes for handshake message
-	n, err := client.Read(buf[:20])
-	if err != nil {
-		log.Printf("error peeking at client (%v): %v\n", client, err)
-		return
-	}
-
-	// XXX hardcoded to bolt 4.2 for now
-	hardcodedVersion := []byte{0x0, 0x0, 0x02, 0x04}
-	match, err := bolt.ValidateHandshake(buf[:n], hardcodedVersion)
-	if err != nil {
-		log.Fatal(err)
-	}
-	_, err = client.Write(match)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// TODO: Keep pulling this BoltConn upwards!!!
-	client2 := bolt.NewDirectConn(client)
-
+func handleBoltConn(client bolt.BoltConn, b *backend.Backend) {
 	// intercept HELLO message for authentication
-	hello, err := client2.ReadMessage()
+	hello, err := client.ReadMessage()
 	if err != nil {
 		log.Fatal(err)
 	}
 	bolt.LogMessage("CLIENT", hello)
 
 	if hello.T != bolt.HelloMsg {
-		panic(fmt.Sprint("unexpected bolt message:", hello.T))
+		log.Println("unexpected bolt message:", hello.T)
+		return
 	}
 
 	// get backend connection
@@ -163,25 +180,34 @@ func handleClient(client net.Conn, b *backend.Backend) {
 		log.Fatal(err)
 	}
 
-	// TODO: for now send our own Success Message
-	_, err = client.Write([]byte{0x0, 0x2b, 0xb1, 0x70, 0xa2, 0x86, 0x73, 0x65, 0x72, 0x76, 0x65, 0x72, 0x8b, 0x4e, 0x65, 0x6f, 0x34, 0x6a, 0x2f, 0x34, 0x2e,
-		0x32, 0x2e, 0x30, 0x8d, 0x63, 0x6f, 0x6e, 0x6e, 0x65, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x5f, 0x69, 0x64, 0x86, 0x62, 0x6f, 0x6c, 0x74, 0x2d, 0x34, 0x00, 0x00})
+	// TODO: Replace hardcoded Success message with dynamic one
+	success := bolt.Message{
+		T: bolt.SuccessMsg,
+		Data: []byte{
+			0x0, 0x2b, 0xb1, 0x70,
+			0xa2,
+			0x86, 0x73, 0x65, 0x72, 0x76, 0x65, 0x72,
+			0x8b, 0x4e, 0x65, 0x6f, 0x34, 0x6a, 0x2f, 0x34, 0x2e,
+			0x32, 0x2e, 0x30,
+			0x8d, 0x63, 0x6f, 0x6e, 0x6e, 0x65, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x5f, 0x69, 0x64,
+			0x86, 0x62, 0x6f, 0x6c, 0x74, 0x2d, 0x34,
+			0x00, 0x00}}
+	err = client.WriteMessage(&success)
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Println("sent login Success to client")
 
-	// ****************
-	// zero our buf since it might have secrets
-	for i, _ := range buf {
-		buf[i] = 0
+	doneChan := make(chan bool, 1)
+	resetChan := make(chan bool, 1)
+	startingTx := false
+	var lastMessageType bolt.Type
+	emptySuccess := bolt.Message{
+		T:    bolt.SuccessMsg,
+		Data: []byte{0x0, 0x3, 0xb1, 0x70, 0xa0, 0x0, 0x0},
 	}
-
-	serverChan := make(chan bool)
-
 	// loop over transactions
 	for {
-		message, err := client2.ReadMessage()
+		message, err := client.ReadMessage()
 		if err != nil {
 			if err == io.EOF {
 				log.Println("premature EOF detected?!")
@@ -191,16 +217,37 @@ func handleClient(client net.Conn, b *backend.Backend) {
 		}
 		bolt.LogMessage("CLIENT", message)
 
-		if message.T == bolt.RunMsg || message.T == bolt.BeginMsg {
+		switch message.T {
+		case bolt.BeginMsg:
+			startingTx = true
+		case bolt.RunMsg:
+			if lastMessageType != bolt.BeginMsg {
+				startingTx = true
+			}
+		case bolt.ResetMsg:
+			log.Println("asked to reset by client")
+			select {
+			case resetChan <- true:
+				log.Println("told server to reset")
+				client.WriteMessage(&emptySuccess)
+				continue
+			default:
+			}
+		}
+
+		if startingTx {
 			mode, _ := bolt.ValidateMode(message.Data)
 			log.Printf("[!!!]: NEW TRANSACTION, MODE = %s\n", mode)
-			go splice(client2, server, "SERVER", serverChan)
+			go splice(client, server, "SERVER", resetChan, doneChan)
+			startingTx = false
 		}
 
 		err = server.WriteMessage(message)
 		if err != nil {
 			log.Fatal(err)
 		}
+
+		lastMessageType = message.T
 	}
 }
 
@@ -235,7 +282,7 @@ func main() {
 		if err != nil {
 			log.Printf("error: %v\n", err)
 		} else {
-			go handleConn(conn, backend)
+			go handleClient(conn, backend)
 		}
 	}
 }
