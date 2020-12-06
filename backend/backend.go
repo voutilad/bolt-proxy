@@ -2,7 +2,6 @@ package backend
 
 import (
 	"log"
-	"net"
 	"time"
 
 	"github.com/voutilad/bolt-proxy/bolt"
@@ -43,10 +42,13 @@ func (b *Backend) RoutingTable() *RoutingTable {
 }
 
 // For now, try auth'ing to the default db "Writer"
-func (b *Backend) Authenticate(hello []byte) (net.Conn, error) {
+func (b *Backend) Authenticate(hello *bolt.Message) (bolt.BoltConn, error) {
+	if hello.T != bolt.HelloMsg {
+		panic("authenticate requires a Hello message")
+	}
 
 	// TODO: clean up this api...push the dirt into Bolt package
-	msg, _, err := bolt.ParseTinyMap(hello[4:])
+	msg, _, err := bolt.ParseTinyMap(hello.Data[4:])
 	principal := msg["principal"].(string)
 
 	log.Println("found principal:", principal)
@@ -57,6 +59,6 @@ func (b *Backend) Authenticate(hello []byte) (net.Conn, error) {
 	writers, _ := rt.WritersFor(rt.DefaultDb)
 
 	log.Printf("trying to auth %s to backend host %s\n", principal, writers[0])
-	conn, err := authClient(hello, "tcp", writers[0])
-	return conn, err
+	conn, err := authClient(hello.Data, "tcp", writers[0])
+	return bolt.NewDirectConn(conn), err
 }

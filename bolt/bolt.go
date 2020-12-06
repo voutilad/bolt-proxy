@@ -96,6 +96,10 @@ func Parse(buf []byte) ([]Message, []byte, error) {
 	return messages, chunk, nil
 }
 
+func LogMessage(who string, msg *Message) {
+	log.Printf("[%s] <%s>:\t%#v\n", who, msg.T, msg.Data)
+}
+
 func LogMessages(who string, messages []Message) {
 	for i, msg := range messages {
 		log.Printf("[%s]{%d} <%s>:\t%#v\n", who, i, msg.T, msg.Data)

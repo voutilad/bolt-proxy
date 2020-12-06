@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -13,56 +14,42 @@ import (
 	"github.com/gobwas/ws"
 )
 
-// "Splice" together a write-to net.Conn with a read-from net.Conn with
-// the given name (for logging purposes). Reads data from r, parses into
-// Bolt Messages, validates some state, and relayws the data to w.
+// "Splice" together a write-to BoltConn to a read-from BoltConn with
+// the given name (for logging purposes). Reads Messages from r,
+// validates some state, and relays the Messages to w.
 //
-// Before aborting, sends a message via the provided done channel.
-func splice(w, r io.ReadWriteCloser, name string, done chan<- bool) {
-	buf := make([]byte, 4*1024)
+// Before aborting, sends a bool via the provided done channel to
+// signal any waiting go routine.
+func splice(w, r bolt.BoltConn, name string, done chan<- bool) {
+	//buf := make([]byte, 4*1024)
 	finished := false
 
 	for !finished {
-		n, err := r.Read(buf)
+		message, err := r.ReadMessage()
 		if err != nil {
 			if err == io.EOF {
-				log.Println("EOF detected for", name)
 				break
 			}
-			log.Fatalf("Read failure on %s splice: %s\n", name, err.Error())
-		}
-
-		messages, _, err := bolt.Parse(buf[:n])
-		if err != nil {
 			panic(err)
 		}
+		bolt.LogMessage(name, message)
 
-		// LOG EARLY FOR DEBUGGING
-		bolt.LogMessages(name, messages)
-
-		// try to inspect for messages
-		for _, message := range messages {
-			switch message.T {
-			case bolt.GoodbyeMsg:
+		switch message.T {
+		case bolt.GoodbyeMsg:
+			finished = true
+		case bolt.SuccessMsg:
+			success, _, err := bolt.ParseTinyMap(message.Data[4:])
+			if err != nil {
+				panic(err)
+			}
+			val, found := success["bookmark"]
+			if found {
+				log.Printf("got bookmark: %s\n", val)
 				finished = true
-			case bolt.SuccessMsg:
-				success, _, err := bolt.ParseTinyMap(message.Data[4:])
-				if err != nil {
-					panic(err)
-				}
-				val, found := success["bookmark"]
-				if found {
-					log.Printf("got bookmark: %s\n", val)
-					finished = true
-				}
 			}
 		}
 
-		_, err = w.Write(buf[:n])
-		if err != nil {
-			log.Fatalf("Write failure on %s splice: %s\n", name, err.Error())
-		}
-
+		w.WriteMessage(message)
 	}
 	done <- true
 }
@@ -134,7 +121,7 @@ func handleConn(conn net.Conn, b *backend.Backend) {
 }
 
 // Primary Client connection handler
-func handleClient(client io.ReadWriteCloser, b *backend.Backend) {
+func handleClient(client net.Conn, b *backend.Backend) {
 	buf := make([]byte, 1024)
 
 	// read bytes for handshake message
@@ -155,20 +142,23 @@ func handleClient(client io.ReadWriteCloser, b *backend.Backend) {
 		log.Fatal(err)
 	}
 
+	// TODO: Keep pulling this BoltConn upwards!!!
+	client2 := bolt.NewDirectConn(client)
+
 	// intercept HELLO message for authentication
-	n, err = client.Read(buf)
+	hello, err := client2.ReadMessage()
 	if err != nil {
 		log.Fatal(err)
 	}
-	messages, _, err := bolt.Parse(buf[:n])
-	if err != nil {
-		panic(err)
+	bolt.LogMessage("CLIENT", hello)
+
+	if hello.T != bolt.HelloMsg {
+		panic(fmt.Sprint("unexpected bolt message:", hello.T))
 	}
-	bolt.LogMessages("CLIENT", messages)
 
 	// get backend connection
 	log.Println("trying to auth...")
-	server, err := b.Authenticate(buf[:n])
+	server, err := b.Authenticate(hello)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -188,10 +178,10 @@ func handleClient(client io.ReadWriteCloser, b *backend.Backend) {
 	}
 
 	serverChan := make(chan bool)
+
 	// loop over transactions
 	for {
-		// wait for the client to make the first move so we can react
-		n, err = client.Read(buf)
+		message, err := client2.ReadMessage()
 		if err != nil {
 			if err == io.EOF {
 				log.Println("premature EOF detected?!")
@@ -199,21 +189,15 @@ func handleClient(client io.ReadWriteCloser, b *backend.Backend) {
 			}
 			log.Fatal(err)
 		}
-		messages, _, err := bolt.Parse(buf[:n])
-		if err != nil {
-			panic(err)
-		}
-		bolt.LogMessages("CLIENT", messages)
+		bolt.LogMessage("CLIENT", message)
 
-		msg := messages[0]
-		if msg.T == bolt.RunMsg || msg.T == bolt.BeginMsg {
-			mode, _ := bolt.ValidateMode(msg.Data)
+		if message.T == bolt.RunMsg || message.T == bolt.BeginMsg {
+			mode, _ := bolt.ValidateMode(message.Data)
 			log.Printf("[!!!]: NEW TRANSACTION, MODE = %s\n", mode)
-			go splice(client, server, "SERVER", serverChan)
+			go splice(client2, server, "SERVER", serverChan)
 		}
 
-		// flush message to server
-		_, err = server.Write(buf[:n])
+		err = server.WriteMessage(message)
 		if err != nil {
 			log.Fatal(err)
 		}
