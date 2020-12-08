@@ -2,6 +2,7 @@ package backend
 
 import (
 	"log"
+	"strings"
 	"time"
 
 	"github.com/voutilad/bolt-proxy/bolt"
@@ -10,6 +11,7 @@ import (
 type Backend struct {
 	monitor      *Monitor
 	routingTable *RoutingTable
+	tls          bool
 }
 
 func NewBackend(username, password string, uri string, hosts ...string) (*Backend, error) {
@@ -19,7 +21,14 @@ func NewBackend(username, password string, uri string, hosts ...string) (*Backen
 	}
 	routingTable := <-monitor.C
 
-	return &Backend{monitor, routingTable}, nil
+	tls := false
+	switch strings.Split(uri, ":")[0] {
+	case "bolt+s", "bolt+ssc", "neo4j+s", "neo4j+ssc":
+		tls = true
+	default:
+	}
+
+	return &Backend{monitor, routingTable, tls}, nil
 }
 
 func (b *Backend) RoutingTable() *RoutingTable {
@@ -63,6 +72,6 @@ func (b *Backend) Authenticate(hello *bolt.Message) (bolt.BoltConn, error) {
 	writers, _ := rt.WritersFor(rt.DefaultDb)
 
 	log.Printf("trying to auth %s to backend host %s\n", principal, writers[0])
-	conn, err := authClient(hello.Data, "tcp", writers[0])
+	conn, err := authClient(hello.Data, "tcp", writers[0], b.tls)
 	return bolt.NewDirectConn(conn), err
 }

@@ -3,6 +3,7 @@ package backend
 // This is horrible...don't look here yet
 
 import (
+	"crypto/tls"
 	"errors"
 	"log"
 	"net"
@@ -18,8 +19,16 @@ var handshake = []byte{
 	0x00, 0x00, 0x00, 0x03}
 
 // horrible check to see if a client is able to auth
-func authClient(auth []byte, network, address string) (net.Conn, error) {
-	conn, err := net.Dial(network, address)
+func authClient(auth []byte, network, address string, useTls bool) (net.Conn, error) {
+	var conn net.Conn
+	var err error
+	if useTls {
+		conf := &tls.Config{}
+		conn, err = tls.Dial(network, address, conf)
+	} else {
+		conn, err = net.Dial(network, address)
+	}
+
 	if err != nil {
 		return nil, err
 	}
