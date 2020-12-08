@@ -3,6 +3,7 @@ package bolt
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 
 	"github.com/gobwas/ws"
@@ -83,9 +84,17 @@ func (c WsConn) ReadMessage() (*Message, error) {
 		return nil, err
 	}
 
+	switch header.OpCode {
+	case ws.OpClose:
+		return nil, io.EOF
+	case ws.OpPing, ws.OpPong, ws.OpContinuation, ws.OpText:
+		msg := fmt.Sprintf("unsupported websocket opcode: %v\n", header.OpCode)
+		return nil, errors.New(msg)
+	}
+
 	// TODO: handle header.Length == 0 situations?
 	if header.Length == 0 {
-		panic("header.Length = 0!")
+		return nil, errors.New("zero length header?!")
 	}
 
 	n, err := c.conn.Read(c.buf[:header.Length])

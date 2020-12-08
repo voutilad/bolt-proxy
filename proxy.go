@@ -7,6 +7,10 @@ import (
 	"log"
 	"net"
 
+	// debuggin'
+	"net/http"
+	_ "net/http/pprof"
+
 	"github.com/voutilad/bolt-proxy/backend"
 	"github.com/voutilad/bolt-proxy/bolt"
 
@@ -19,38 +23,50 @@ import (
 //
 // Before aborting, sends a bool via the provided done channel to
 // signal any waiting go routine.
-func splice(w, r bolt.BoltConn, name string, reset chan bool, done chan<- bool) {
-	//buf := make([]byte, 4*1024)
-	finished := false
+func handleTx(client, server bolt.BoltConn, reset <-chan bool) {
 
-	for !finished {
-		message, err := r.ReadMessage()
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			log.Println("PROBLEMS READING ", name)
-			panic(err)
-		}
-		bolt.LogMessage(name, message)
-
-		switch message.T {
-		case bolt.GoodbyeMsg:
-			finished = true
-		case bolt.SuccessMsg:
-			success, _, err := bolt.ParseTinyMap(message.Data[4:])
-			if err == nil {
-				val, found := success["bookmark"]
-				if found {
-					log.Printf("got bookmark: %s\n", val)
-					finished = true
+	msgs := make(chan *bolt.Message, 5)
+	done := make(chan bool, 1)
+	go func() {
+		defer func() {
+			done <- true
+		}()
+		for {
+			message, err := server.ReadMessage()
+			if err != nil {
+				if err == io.EOF {
+					log.Println("EOF reading server")
+					return
 				}
+				// panic(err)
+				return
 			}
+			bolt.LogMessage("SERVER", message)
+			msgs <- message
 		}
+	}()
 
-		w.WriteMessage(message)
+	finished := false
+	for !finished {
+		select {
+		case msg := <-msgs:
+			client.WriteMessage(msg)
+			if msg.T == bolt.GoodbyeMsg {
+				finished = true
+			}
+		case <-reset:
+			// Hang up on the server
+			m := bolt.Message{
+				T:    bolt.GoodbyeMsg,
+				Data: []byte{0x0, 0x2, 0xb0, 0x2, 0x0, 0x0},
+			}
+			server.WriteMessage(&m)
+			finished = true
+		case <-done:
+			log.Println("closing server tx handler")
+			finished = true
+		}
 	}
-	done <- true
 }
 
 // Identify if a new connection is valid Bolt or Bolt-on-Websockets.
@@ -164,12 +180,13 @@ func handleBoltConn(client bolt.BoltConn, b *backend.Backend) {
 	// intercept HELLO message for authentication
 	hello, err := client.ReadMessage()
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("failed to read expected Hello: %v\n", err)
+		return
 	}
 	bolt.LogMessage("CLIENT", hello)
 
 	if hello.T != bolt.HelloMsg {
-		log.Println("unexpected bolt message:", hello.T)
+		log.Println("expected HelloMsg, got:", hello.T)
 		return
 	}
 
@@ -197,57 +214,78 @@ func handleBoltConn(client bolt.BoltConn, b *backend.Backend) {
 		log.Fatal(err)
 	}
 
-	doneChan := make(chan bool, 1)
-	resetChan := make(chan bool, 1)
-	startingTx := false
-	var lastMessageType bolt.Type
-	emptySuccess := bolt.Message{
-		T:    bolt.SuccessMsg,
-		Data: []byte{0x0, 0x3, 0xb1, 0x70, 0xa0, 0x0, 0x0},
-	}
-	// loop over transactions
-	for {
-		message, err := client.ReadMessage()
-		if err != nil {
-			if err == io.EOF {
-				log.Println("premature EOF detected?!")
-				return
-			}
-			log.Fatal(err)
-		}
-		bolt.LogMessage("CLIENT", message)
+	// Some channels:
+	//  - msgs: our Message queue for client Messages
+	//  - reset: for signaling to our tx handler our client Reset
+	msgs := make(chan *bolt.Message, 10)
+	reset := make(chan bool, 1)
+	done := make(chan bool, 1)
 
-		switch message.T {
+	go func() {
+		defer func() {
+			done <- true
+		}()
+		for {
+			m, err := client.ReadMessage()
+			if err != nil {
+				if err == io.EOF {
+					log.Println("EOF reading client")
+					return
+				}
+				panic(err)
+			}
+			bolt.LogMessage("CLIENT", m)
+			msgs <- m
+		}
+	}()
+
+	// event loop...we enter in a state of HELLO being accepted
+	startingTx := false
+	manualTx := false
+	for {
+		// get the next event
+		var msg *bolt.Message
+		select {
+		case m := <-msgs:
+			msg = m
+		case <-done:
+			log.Println("closing client handler")
+			return
+		}
+
+		switch msg.T {
 		case bolt.BeginMsg:
 			startingTx = true
+			manualTx = true
 		case bolt.RunMsg:
-			if lastMessageType != bolt.BeginMsg {
+			if !manualTx {
 				startingTx = true
 			}
-		case bolt.ResetMsg:
-			log.Println("asked to reset by client")
-			select {
-			case resetChan <- true:
-				log.Println("told server to reset")
-				client.WriteMessage(&emptySuccess)
-				continue
-			default:
-			}
-		}
-
-		if startingTx {
-			mode, _ := bolt.ValidateMode(message.Data)
-			log.Printf("[!!!]: NEW TRANSACTION, MODE = %s\n", mode)
-			go splice(client, server, "SERVER", resetChan, doneChan)
+		case bolt.CommitMsg, bolt.RollbackMsg, bolt.ResetMsg:
+			log.Println("client asked for", msg.T)
+			manualTx = false
 			startingTx = false
 		}
 
-		err = server.WriteMessage(message)
-		if err != nil {
-			log.Fatal(err)
+		if startingTx {
+			mode, _ := bolt.ValidateMode(msg.Data)
+			log.Printf("[!!!]: NEW TRANSACTION, MODE = %s\n", mode)
+
+			// get backend connection
+			log.Println("trying to auth new server connection...")
+			server, err = b.Authenticate(hello)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			go handleTx(client, server, reset)
+			startingTx = false
 		}
 
-		lastMessageType = message.T
+		err = server.WriteMessage(msg)
+		if err != nil && msg.T != bolt.ResetMsg {
+			log.Fatal(err)
+		}
 	}
 }
 
@@ -261,6 +299,11 @@ func main() {
 	flag.StringVar(&username, "user", "neo4j", "Neo4j username")
 	flag.StringVar(&password, "pass", "", "Neo4j password")
 	flag.Parse()
+
+	// ---------- pprof debugger
+	go func() {
+		log.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
 
 	// ---------- BACK END
 	log.Println("Starting bolt-proxy back-end...")
