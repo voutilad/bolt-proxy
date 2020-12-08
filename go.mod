@@ -8,3 +8,5 @@ require (
 	github.com/gobwas/ws v1.0.4
 	github.com/neo4j/neo4j-go-driver/v4 v4.0.0-beta2
 )
+
+replace github.com/neo4j/neo4j-go-driver/v4 v4.0.0-beta2 => github.com/neo4j/neo4j-go-driver/v4 v4.2.0
