@@ -139,8 +139,13 @@ RETURN name, default, currentStatus ORDER BY default DESC
 
 // Use SHOW DATABASES to dump the current list of databases with the first
 // database name being the default (based on the query logic)
-func queryDbNames(s neo4j.Session) ([]string, error) {
-	result, err := s.Run(SHOW_DATABASES, nil)
+func queryDbNames(driver *neo4j.Driver) ([]string, error) {
+	session := (*driver).NewSession(neo4j.SessionConfig{
+		DatabaseName: "system",
+	})
+	defer session.Close()
+
+	result, err := session.Run(SHOW_DATABASES, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -165,7 +170,26 @@ func queryDbNames(s neo4j.Session) ([]string, error) {
 	return names, nil
 }
 
-func queryRoutingTable(tx neo4j.Transaction, names []string) (interface{}, error) {
+func queryRoutingTable(driver *neo4j.Driver, names []string) (map[string]table, error) {
+	session := (*driver).NewSession(neo4j.SessionConfig{})
+	defer session.Close()
+
+	result, err := session.ReadTransaction(func(tx neo4j.Transaction) (interface{}, error) {
+		return routingTableTx(tx, names)
+	})
+	if err != nil {
+		return map[string]table{}, err
+	}
+
+	tableMap, ok := result.(map[string]table)
+	if !ok {
+		return map[string]table{}, errors.New("invalid type for routing table response")
+	}
+
+	return tableMap, nil
+}
+
+func routingTableTx(tx neo4j.Transaction, names []string) (interface{}, error) {
 	params := make(map[string]interface{}, 1)
 	params["names"] = names
 	result, err := tx.Run(ROUTING_QUERY, params)
@@ -243,25 +267,16 @@ func queryRoutingTable(tx neo4j.Transaction, names []string) (interface{}, error
 }
 
 func getNewRoutingTable(driver *neo4j.Driver) (*RoutingTable, error) {
-	session := (*driver).NewSession(neo4j.SessionConfig{})
-	defer session.Close()
-
-	names, err := queryDbNames(session)
+	names, err := queryDbNames(driver)
 	if err != nil {
-		log.Println("error querying database names")
+		log.Printf("error getting database names: %v\n", err)
 		return nil, err
 	}
 
-	result, err := session.ReadTransaction(func(tx neo4j.Transaction) (interface{}, error) {
-		return queryRoutingTable(tx, names)
-	})
+	tableMap, err := queryRoutingTable(driver, names)
 	if err != nil {
-		log.Fatal(err)
-	}
-
-	tableMap, ok := result.(map[string]table)
-	if !ok {
-		panic(err)
+		log.Printf("error getting routing table: %v\n", err)
+		return nil, err
 	}
 
 	// build the new routing table instance
