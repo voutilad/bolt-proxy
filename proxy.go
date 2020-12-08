@@ -291,12 +291,10 @@ func handleBoltConn(client bolt.BoltConn, b *backend.Backend) {
 
 func main() {
 	var bindOn string
-	var useTls bool
 	var proxyTo string
 	var username, password string
 
 	flag.StringVar(&bindOn, "bind", "localhost:8888", "host:port to bind to")
-	flag.BoolVar(&useTls, "tls", false, "use TLS (on listen side)")
 	flag.StringVar(&proxyTo, "uri", "bolt://localhost:7687", "bolt uri for remote Neo4j")
 	flag.StringVar(&username, "user", "neo4j", "Neo4j username")
 	flag.StringVar(&password, "pass", "", "Neo4j password")
