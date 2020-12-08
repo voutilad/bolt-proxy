@@ -54,12 +54,18 @@ Now that I'm neck deep in this...here's where `bolt-proxy` stands:
 3. Websocket-based connectivity via Neo4j Browser
 4. Monitors routing table for the backend databases (using Neo4j Go
    driver) at interval dictated by the backend's ttl settings
+5. Backend supports Neo4j Aura as it now supports TLS-based
+   backend connections.
 
 ## What doesn't (yet) work:
-1. No support for TLS via clients or for backend
+1. No support for TLS on the frontend (e.g. client-side), so you need
+   to tell your client to use `bolt://`
 2. Not yet utilizing routing table for picking read vs write host
 3. No caching of credentials or pre-opening of multiple connections
    (to each backend cluster member, for instance)
+4. No emulation of routing table, so if you use `neo4j://` schemes on
+   the front-end, you'll probably bypass the proxy! (If the routing
+   stuff gets pushed into Bolt, this might be easier to deal with.)
 
 ## Other random known issues:
 1. Go profiler is enabled by default (accessisble via the web
@@ -67,26 +73,42 @@ Now that I'm neck deep in this...here's where `bolt-proxy` stands:
 2. Some errors purposely cause panics for debugging
 3. No testing yet with reactive driver model
 
-# Building & Usage
+# Usage
 
 If you read this far, and haven't run away, this should be easy. (If
 it gets more complex I'll provide a Makefile.)
 
-To build: `go build`
+## Building
 
-Once built:
+No Makefile at the moment, so just: `go build`
+
+## Running
+
+There are a few flags you can set:
 
 ```
 Usage of ./bolt-proxy:
   -bind string
         host:port to bind to (default "localhost:8888")
-  -host string
-        remote neo4j host (default "alpine:7687")
   -pass string
         Neo4j password
+  -uri string
+        bolt uri for remote Neo4j (default "bolt://localhost:7687")
   -user string
         Neo4j username (default "neo4j")
 ```
+
+When you start the proxy, it'll immediately try to connect to the
+target backend using the provided bolt uri, username, and password. It
+will then begin monitoring the routing table.
+
+You then tell your client application (e.g. cypher-shell, Browser) to
+connect to `bolt://<your bind host:port>`. Keep in mind it has to use
+`bolt://` for now.
+
+If the proxy is working properly, it should be seemless and the only
+thing you should notice is it's slower than a direct connection to the
+database :-P
 
 # License
 
