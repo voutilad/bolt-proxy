@@ -12,8 +12,8 @@ type Backend struct {
 	routingTable *RoutingTable
 }
 
-func NewBackend(username, password string, hosts ...string) (*Backend, error) {
-	monitor, err := NewMonitor(username, password, hosts...)
+func NewBackend(username, password string, uri string, hosts ...string) (*Backend, error) {
+	monitor, err := NewMonitor(username, password, uri, hosts...)
 	if err != nil {
 		return nil, err
 	}

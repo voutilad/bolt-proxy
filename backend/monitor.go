@@ -26,15 +26,21 @@ type Monitor struct {
 	driver *neo4j.Driver
 }
 
-// Lots of funny business to handle
+// Our default Driver configuration provides:
+// - custom user-agent name
+// - ability to add in specific list of hosts to use for address resolution
 func newConfigurer(hosts []string) func(c *neo4j.Config) {
 	return func(c *neo4j.Config) {
-		c.AddressResolver = func(_ neo4j.ServerAddress) []neo4j.ServerAddress {
+		c.AddressResolver = func(addr neo4j.ServerAddress) []neo4j.ServerAddress {
+			if len(hosts) == 0 {
+				return []neo4j.ServerAddress{addr}
+			}
+
 			addrs := make([]neo4j.ServerAddress, len(hosts))
 			for i, host := range hosts {
 				parts := strings.Split(host, ":")
 				if len(parts) != 2 {
-					panic("invalid host: " + host)
+					panic(fmt.Sprintf("invalid host: %s", host))
 				}
 				addrs[i] = neo4j.NewServerAddress(parts[0], parts[1])
 			}
@@ -44,17 +50,12 @@ func newConfigurer(hosts []string) func(c *neo4j.Config) {
 	}
 }
 
-func NewMonitor(user, password string, hosts ...string) (*Monitor, error) {
+func NewMonitor(user, password, uri string, hosts ...string) (*Monitor, error) {
 	c := make(chan *RoutingTable, 1)
 	h := make(chan bool, 1)
 
-	if len(hosts) == 0 {
-		hosts[0] = "localhost:7687"
-	}
-
 	// Try immediately to connect to Neo4j
 	auth := neo4j.BasicAuth(user, password, "")
-	uri := fmt.Sprintf("bolt://%s", hosts[0])
 	driver, err := neo4j.NewDriver(uri, auth, newConfigurer(hosts))
 
 	// Get the first routing table and ttl details
