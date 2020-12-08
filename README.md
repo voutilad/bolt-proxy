@@ -48,7 +48,8 @@ of network trickery required usually leads to suffering.
 Now that I'm neck deep in this...here's where `bolt-proxy` stands:
 
 ## What works:
-1. Can proxy to single-instance Neo4j via direct TCP connectivity
+1. Can proxy to single-instance and clustered Neo4j via direct TCP
+   connectivity
 2. Tested with auto-commit transactions, transaction functions, and
    manual transactions (via Python driver and cypher-shell)
 3. Websocket-based connectivity via Neo4j Browser
@@ -66,6 +67,7 @@ Now that I'm neck deep in this...here's where `bolt-proxy` stands:
 4. No emulation of routing table, so if you use `neo4j://` schemes on
    the front-end, you'll probably bypass the proxy! (If the routing
    stuff gets pushed into Bolt, this might be easier to deal with.)
+5. No support for "routing policies"
 
 ## Other random known issues:
 1. Go profiler is enabled by default (accessisble via the web
