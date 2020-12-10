@@ -108,15 +108,16 @@ func (b *Backend) Authenticate(hello *bolt.Message) (map[string]bolt.BoltConn, e
 		if host != defaultWriter {
 			// done this one already
 			wg.Add(1)
-			go func() {
+			go func(h string) {
 				defer wg.Done()
-				conn, err := authClient(hello.Data, "tcp", host, b.tls)
+				conn, err := authClient(hello.Data, "tcp", h, b.tls)
 				if err != nil {
-					log.Printf("failed to auth %s to %s!?\n", principal, host)
+					log.Printf("failed to auth %s to %s!?\n", principal, h)
 					return
 				}
-				c <- pair{bolt.NewDirectConn(conn), host}
-			}()
+				log.Printf("auth'd %s to host %s\n", principal, h)
+				c <- pair{bolt.NewDirectConn(conn), h}
+			}(host)
 		}
 	}
 

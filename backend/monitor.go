@@ -57,6 +57,9 @@ func NewMonitor(user, password, uri string, hosts ...string) (*Monitor, error) {
 	// Try immediately to connect to Neo4j
 	auth := neo4j.BasicAuth(user, password, "")
 	driver, err := neo4j.NewDriver(uri, auth, newConfigurer(hosts))
+	if err != nil {
+		return nil, err
+	}
 
 	// Get the first routing table and ttl details
 	rt, err := getNewRoutingTable(&driver)
@@ -288,7 +291,7 @@ func getNewRoutingTable(driver *neo4j.Driver) (*RoutingTable, error) {
 		readers:   readers,
 		writers:   writers,
 		CreatedAt: time.Now(),
-		Hosts:     map[string]bool{},
+		Hosts:     make(map[string]bool),
 	}
 	for db, t := range tableMap {
 		r := make([]string, len(t.readers))
@@ -302,15 +305,16 @@ func getNewRoutingTable(driver *neo4j.Driver) (*RoutingTable, error) {
 		rt.Ttl = t.ttl
 
 		// yes, this is also wasteful...construct host sets
-		for _, host := range t.readers {
+		for _, host := range r {
 			rt.Hosts[host] = true
 		}
-		for _, host := range t.writers {
+		for _, host := range w {
 			rt.Hosts[host] = true
 		}
 	}
 
 	log.Printf("updated routing table: %s\n", &rt)
+	log.Printf("known hosts look like: %s\n", rt.Hosts)
 
 	return &rt, nil
 }
