@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"time"
 
 	// debuggin'
 	"net/http"
@@ -23,56 +24,58 @@ import (
 //
 // Before aborting, sends a bool via the provided done channel to
 // signal any waiting go routine.
-func handleTx(client, server bolt.BoltConn, reset <-chan bool) {
-
-	msgs := make(chan *bolt.Message, 5)
-	done := make(chan bool, 1)
-	go func() {
-		defer func() {
-			done <- true
-		}()
-		for {
-			message, err := server.ReadMessage()
-			if err != nil {
-				if err == io.EOF {
-					log.Println("EOF reading server")
-					return
-				}
-				// panic(err)
-				return
-			}
-			bolt.LogMessage("SERVER", message)
-			msgs <- message
-		}
-	}()
-
+func handleTx(client, server bolt.BoltConn, ack chan<- bool, reset, halt <-chan bool) {
 	finished := false
+	resetting := false
+
+	success := []byte{0x0, 0x3, 0xb1, 0x70, 0xa0, 0x0, 0x0}
+
 	for !finished {
 		select {
-		case msg := <-msgs:
-			client.WriteMessage(msg)
-			if msg.T == bolt.GoodbyeMsg {
+		case msg, ok := <-server.R():
+			if ok {
+				bolt.LogMessage("P<-S", msg)
+				err := client.WriteMessage(msg)
+				if err != nil {
+					panic(err)
+				}
+				bolt.LogMessage("C<-P", msg)
+				if msg.T == bolt.GoodbyeMsg {
+					finished = true
+				} else if resetting && bytes.Equal(success, msg.Data) {
+					log.Println("tx handler saw SUCCESS and was asked to reset")
+					finished = true
+				}
+			} else {
+				log.Println("potential server hangup")
 				finished = true
 			}
 		case <-reset:
-			// Hang up on the server
-			m := bolt.Message{
-				T:    bolt.GoodbyeMsg,
-				Data: []byte{0x0, 0x2, 0xb0, 0x2, 0x0, 0x0},
-			}
-			server.WriteMessage(&m)
+			resetting = true
+		case <-halt:
 			finished = true
-		case <-done:
-			log.Println("closing server tx handler")
+		case <-time.After(5 * time.Minute):
+			log.Println("timeout reading server!")
 			finished = true
 		}
+	}
+	log.Println("!! txhandler stopped")
+
+	select {
+	case ack <- true:
+		log.Println("tx handler stop ACK sent")
+	default:
+		panic("couldn't put value in ack channel?!")
 	}
 }
 
 // Identify if a new connection is valid Bolt or Bolt-on-Websockets.
 // If so, pass it to the proper handler. Otherwise, close the connection.
 func handleClient(conn net.Conn, b *backend.Backend) {
-	defer conn.Close()
+	defer func() {
+		log.Println("closing client connection", conn)
+		conn.Close()
+	}()
 
 	// XXX why 1024? I've observed long user-agents that make this
 	// pass the 512 mark easily, so let's be safe and go a full 1kb
@@ -159,10 +162,7 @@ func handleClient(conn net.Conn, b *backend.Backend) {
 			log.Fatal(err)
 		}
 
-		log.Printf("XXX sending match back: %#v\n", match)
 		frame := ws.NewBinaryFrame(match)
-
-		log.Printf("XXX sending Frame: %#v\n", frame)
 		if err = ws.WriteFrame(conn, frame); err != nil {
 			log.Fatal(err)
 		}
@@ -178,12 +178,19 @@ func handleClient(conn net.Conn, b *backend.Backend) {
 // Primary Client connection handler
 func handleBoltConn(client bolt.BoltConn, b *backend.Backend) {
 	// intercept HELLO message for authentication
-	hello, err := client.ReadMessage()
-	if err != nil {
-		log.Printf("failed to read expected Hello: %v\n", err)
+	var hello *bolt.Message
+	select {
+	case msg, ok := <-client.R():
+		if !ok {
+			log.Println("failed to read expected Hello from client")
+			return
+		}
+		hello = msg
+	case <-time.After(30 * time.Second):
+		log.Println("timed out waiting for client to auth")
 		return
 	}
-	bolt.LogMessage("CLIENT", hello)
+	bolt.LogMessage("C->P", hello)
 
 	if hello.T != bolt.HelloMsg {
 		log.Println("expected HelloMsg, got:", hello.T)
@@ -191,8 +198,8 @@ func handleBoltConn(client bolt.BoltConn, b *backend.Backend) {
 	}
 
 	// get backend connection
-	log.Println("trying to auth...")
-	server, err := b.Authenticate(hello)
+	log.Println("trying to authenticate with backend...")
+	pool, err := b.Authenticate(hello)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -209,48 +216,43 @@ func handleBoltConn(client bolt.BoltConn, b *backend.Backend) {
 			0x8d, 0x63, 0x6f, 0x6e, 0x6e, 0x65, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x5f, 0x69, 0x64,
 			0x86, 0x62, 0x6f, 0x6c, 0x74, 0x2d, 0x34,
 			0x00, 0x00}}
+	bolt.LogMessage("P->C", &success)
 	err = client.WriteMessage(&success)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	// Some channels:
-	//  - msgs: our Message queue for client Messages
 	//  - reset: for signaling to our tx handler our client Reset
-	msgs := make(chan *bolt.Message, 10)
 	reset := make(chan bool, 1)
-	done := make(chan bool, 1)
+	ack := make(chan bool, 1)
 
-	go func() {
-		defer func() {
-			done <- true
-		}()
-		for {
-			m, err := client.ReadMessage()
-			if err != nil {
-				if err == io.EOF {
-					log.Println("EOF reading client")
-					return
-				}
-				panic(err)
-			}
-			bolt.LogMessage("CLIENT", m)
-			msgs <- m
-		}
-	}()
-
-	// event loop...we enter in a state of HELLO being accepted
+	// Event loop: we enter in a state of HELLO being accepted
 	startingTx := false
 	manualTx := false
+	resetting := false
+	done := make(chan bool)
+	var server bolt.BoltConn
 	for {
 		// get the next event
 		var msg *bolt.Message
 		select {
-		case m := <-msgs:
-			msg = m
-		case <-done:
-			log.Println("closing client handler")
-			return
+		case m, ok := <-client.R():
+			if ok {
+				msg = m
+				bolt.LogMessage("C->P", msg)
+			} else {
+				log.Println("potential client hangup")
+				select {
+				case done <- true:
+					log.Println("client hungup, asking tx to stop")
+				default:
+					log.Println("failed to send done message to tx handler")
+				}
+				return
+			}
+		case <-time.After(5 * time.Minute):
+			log.Println("client idle timeout of 5 mins")
 		}
 
 		switch msg.T {
@@ -261,30 +263,92 @@ func handleBoltConn(client bolt.BoltConn, b *backend.Backend) {
 			if !manualTx {
 				startingTx = true
 			}
-		case bolt.CommitMsg, bolt.RollbackMsg, bolt.ResetMsg:
+		case bolt.CommitMsg, bolt.RollbackMsg:
 			log.Println("client asked for", msg.T)
 			manualTx = false
 			startingTx = false
+		case bolt.ResetMsg:
+			log.Println("resetting")
+			manualTx = false
+			startingTx = false
+			resetting = true
+			select {
+			case reset <- true:
+				log.Println("requested reset")
+			default:
+				panic("reset queue full!?")
+			}
 		}
 
 		if startingTx {
 			mode, _ := bolt.ValidateMode(msg.Data)
-			log.Printf("[!!!]: NEW TRANSACTION, MODE = %s\n", mode)
+			rt := b.RoutingTable()
 
-			// get backend connection
-			log.Println("trying to auth new server connection...")
-			server, err = b.Authenticate(hello)
-			if err != nil {
-				log.Fatal(err)
+			db := rt.DefaultDb
+
+			// get the db name, if any. otherwise, use default
+			m, _, err := bolt.ParseTinyMap(msg.Data[4:])
+			if err == nil {
+				val, found := m["db"]
+				if found {
+					ok := false
+					db, ok = val.(string)
+					if !ok {
+						panic("db name wasn't a string?!")
+					}
+				}
 			}
 
-			go handleTx(client, server, reset)
+			// just choose the first one for now...something simple
+			var hosts []string
+			if mode == bolt.ReadMode {
+				hosts, err = rt.ReadersFor(db)
+			} else {
+				hosts, err = rt.WritersFor(db)
+			}
+			if err != nil {
+				log.Printf("couldn't find host for '%s' in routing table", db)
+			}
+
+			// at some point we have to figure out how to pick a host
+			if len(hosts) < 1 {
+				log.Println("empty hosts lists for database", db)
+				return
+			}
+			host := hosts[0]
+
+			// grab our host from our local pool
+			ok := false
+			server, ok = pool[host]
+			if !ok {
+				log.Println("no established connection for host", host)
+				return
+			}
+
+			log.Printf("grabbed conn for %s-access to db %s on host %s\n", mode, db, host)
+			go handleTx(client, server, ack, reset, done)
 			startingTx = false
 		}
 
-		err = server.WriteMessage(msg)
-		if err != nil && msg.T != bolt.ResetMsg {
-			log.Fatal(err)
+		// TODO: better connection state tracking?
+		if server != nil {
+			err = server.WriteMessage(msg)
+			if err != nil {
+				log.Fatal(err)
+			}
+			bolt.LogMessage("P->S", msg)
+		}
+
+		if resetting {
+			// wait here for ack
+			select {
+			case <-ack:
+				log.Println("server acked reset")
+			case <-time.After(30 * time.Second):
+				log.Println("no ack in 30s?!")
+				return
+			}
+			resetting = false
 		}
 	}
 }

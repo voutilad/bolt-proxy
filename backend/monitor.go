@@ -280,7 +280,7 @@ func getNewRoutingTable(driver *neo4j.Driver) (*RoutingTable, error) {
 	}
 
 	// build the new routing table instance
-	// TODO: clean this up...seems smelly
+	// TODO: clean this up...seems smelly..
 	readers := make(map[string][]string)
 	writers := make(map[string][]string)
 	rt := RoutingTable{
@@ -288,6 +288,7 @@ func getNewRoutingTable(driver *neo4j.Driver) (*RoutingTable, error) {
 		readers:   readers,
 		writers:   writers,
 		CreatedAt: time.Now(),
+		Hosts:     map[string]bool{},
 	}
 	for db, t := range tableMap {
 		r := make([]string, len(t.readers))
@@ -299,6 +300,14 @@ func getNewRoutingTable(driver *neo4j.Driver) (*RoutingTable, error) {
 
 		// yes, this is redundant...
 		rt.Ttl = t.ttl
+
+		// yes, this is also wasteful...construct host sets
+		for _, host := range t.readers {
+			rt.Hosts[host] = true
+		}
+		for _, host := range t.writers {
+			rt.Hosts[host] = true
+		}
 	}
 
 	log.Printf("updated routing table: %s\n", &rt)

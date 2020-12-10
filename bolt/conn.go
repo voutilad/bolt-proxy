@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 
 	"github.com/gobwas/ws"
 )
@@ -12,7 +13,7 @@ import (
 // An abstraction of a Bolt-aware io.ReadWriterCloser. Allows for sending and
 // receiving Messages, abstracting away the nuances of the transport.
 type BoltConn interface {
-	ReadMessage() (*Message, error)
+	R() <-chan *Message
 	WriteMessage(*Message) error
 	io.Closer
 }
@@ -21,23 +22,48 @@ type BoltConn interface {
 type DirectConn struct {
 	conn io.ReadWriteCloser
 	buf  []byte
+	r    <-chan *Message
 }
 
 // Used for WebSocket-based Bolt connections
 type WsConn struct {
 	conn io.ReadWriteCloser
 	buf  []byte
+	r    <-chan *Message
 }
 
 func NewDirectConn(c io.ReadWriteCloser) DirectConn {
-	return DirectConn{c, make([]byte, 1024*1024)}
+	msgchan := make(chan *Message)
+	dc := DirectConn{
+		conn: c,
+		buf:  make([]byte, 1024*1024),
+		r:    msgchan,
+	}
+
+	go func() {
+		for {
+			message, err := dc.readMessage()
+			if err != nil {
+				if err == io.EOF {
+					log.Println("direct bolt connection hung-up")
+					close(msgchan)
+					return
+				}
+				log.Printf("direct bolt connection error! %s\n", err)
+				return
+			}
+			msgchan <- message
+		}
+	}()
+
+	return dc
 }
 
-func NewWsConn(c io.ReadWriteCloser) WsConn {
-	return WsConn{c, make([]byte, 128*1024)}
+func (c DirectConn) R() <-chan *Message {
+	return c.r
 }
 
-func (c DirectConn) ReadMessage() (*Message, error) {
+func (c DirectConn) readMessage() (*Message, error) {
 	var n int
 	var err error
 
@@ -46,6 +72,10 @@ func (c DirectConn) ReadMessage() (*Message, error) {
 		n, err = c.conn.Read(c.buf[pos : pos+2])
 		if err != nil {
 			return nil, err
+		}
+		// TODO: deal with this horrible issue!
+		if n < 2 {
+			panic("under-read?!")
 		}
 		msglen := int(binary.BigEndian.Uint16(c.buf[pos : pos+n]))
 		pos = pos + n
@@ -78,7 +108,57 @@ func (c DirectConn) ReadMessage() (*Message, error) {
 	}, nil
 }
 
-func (c WsConn) ReadMessage() (*Message, error) {
+func (c DirectConn) WriteMessage(m *Message) error {
+	// TODO validate message?
+
+	n, err := c.conn.Write(m.Data)
+	if err != nil {
+		return err
+	}
+	if n != len(m.Data) {
+		// TODO: loop to write all data?
+		panic("incomplete message written")
+	}
+
+	return nil
+}
+
+func (c DirectConn) Close() error {
+	return c.conn.Close()
+}
+
+func NewWsConn(c io.ReadWriteCloser) WsConn {
+	msgchan := make(chan *Message)
+	ws := WsConn{
+		conn: c,
+		buf:  make([]byte, 1024*1024),
+		r:    msgchan,
+	}
+
+	go func() {
+		for {
+			message, err := ws.readMessage()
+			if err != nil {
+				if err == io.EOF {
+					log.Println("bolt ws connection hung-up")
+					close(msgchan)
+					return
+				}
+				log.Printf("ws bolt connection error! %s\n", err)
+				return
+			}
+			msgchan <- message
+		}
+	}()
+
+	return ws
+}
+
+func (c WsConn) R() <-chan *Message {
+	return c.r
+}
+
+func (c WsConn) readMessage() (*Message, error) {
 	header, err := ws.ReadHeader(c.conn)
 	if err != nil {
 		return nil, err
@@ -120,31 +200,11 @@ func (c WsConn) ReadMessage() (*Message, error) {
 		Data: data,
 	}, nil
 }
-
-func (c DirectConn) WriteMessage(m *Message) error {
-	// TODO validate message?
-
-	n, err := c.conn.Write(m.Data)
-	if err != nil {
-		return err
-	}
-	if n != len(m.Data) {
-		// TODO: loop to write all data?
-		panic("incomplete message written")
-	}
-
-	return nil
-}
-
 func (c WsConn) WriteMessage(m *Message) error {
 	frame := ws.NewBinaryFrame(m.Data)
 	err := ws.WriteFrame(c.conn, frame)
 
 	return err
-}
-
-func (c DirectConn) Close() error {
-	return c.conn.Close()
 }
 
 func (c WsConn) Close() error {

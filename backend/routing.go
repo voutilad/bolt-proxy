@@ -9,6 +9,7 @@ import (
 type RoutingTable struct {
 	readers   map[string][]string
 	writers   map[string][]string
+	Hosts     map[string]bool
 	DefaultDb string
 	Ttl       time.Duration
 	CreatedAt time.Time

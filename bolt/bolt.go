@@ -98,12 +98,24 @@ func Parse(buf []byte) ([]Message, []byte, error) {
 }
 
 func LogMessage(who string, msg *Message) {
-	log.Printf("[%s] <%s>:\t%#v\n%s\n", who, msg.T, msg.Data, msg.Data)
+	//log.Printf("[%s] <%s>:\t%#v\n%s\n", who, msg.T, msg.Data, msg.Data)
+
+	end := 64
+	suffix := fmt.Sprintf("...+%d bytes", len(msg.Data))
+	if len(msg.Data) < 64 {
+		end = len(msg.Data)
+		suffix = ""
+	}
+	if msg.T == BeginMsg || msg.T == RunMsg {
+		log.Printf("[%s] <%s>: %#v\n%s\n", who, msg.T, msg.Data, msg.Data)
+	} else {
+		log.Printf("[%s] <%s>: %#v%s\n", who, msg.T, msg.Data[:end], suffix)
+	}
 }
 
-func LogMessages(who string, messages []Message) {
-	for i, msg := range messages {
-		log.Printf("[%s]{%d} <%s>:\t%#v\n", who, i, msg.T, msg.Data)
+func LogMessages(who string, messages []*Message) {
+	for _, msg := range messages {
+		LogMessage(who, msg)
 	}
 }
 

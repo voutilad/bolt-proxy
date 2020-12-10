@@ -3,6 +3,7 @@ package backend
 import (
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/voutilad/bolt-proxy/bolt"
@@ -12,6 +13,8 @@ type Backend struct {
 	monitor      *Monitor
 	routingTable *RoutingTable
 	tls          bool
+	// map of principals -> hosts -> connections
+	connectionPool map[string]map[string]bolt.BoltConn
 }
 
 func NewBackend(username, password string, uri string, hosts ...string) (*Backend, error) {
@@ -28,7 +31,11 @@ func NewBackend(username, password string, uri string, hosts ...string) (*Backen
 	default:
 	}
 
-	return &Backend{monitor, routingTable, tls}, nil
+	return &Backend{
+		monitor:      monitor,
+		routingTable: routingTable,
+		tls:          tls,
+	}, nil
 }
 
 func (b *Backend) RoutingTable() *RoutingTable {
@@ -50,8 +57,11 @@ func (b *Backend) RoutingTable() *RoutingTable {
 	return b.routingTable
 }
 
-// For now, try auth'ing to the default db "Writer"
-func (b *Backend) Authenticate(hello *bolt.Message) (bolt.BoltConn, error) {
+// For now, we'll authenticate to all known hosts up-front to simplify things.
+// So for a given Hello message, use it to auth against all hosts known in the
+// current routing table. Returns an map[string] of hosts to bolt.BoltConn's
+// if successful, an empty map and an error if not.
+func (b *Backend) Authenticate(hello *bolt.Message) (map[string]bolt.BoltConn, error) {
 	if hello.T != bolt.HelloMsg {
 		panic("authenticate requires a Hello message")
 	}
@@ -62,16 +72,62 @@ func (b *Backend) Authenticate(hello *bolt.Message) (bolt.BoltConn, error) {
 		log.Printf("XXX pos: %d, hello map: %#v\n", pos, msg)
 		panic(err)
 	}
-	principal := msg["principal"].(string)
-
+	principal, ok := msg["principal"].(string)
+	if !ok {
+		panic("principal in Hello message was not a string")
+	}
 	log.Println("found principal:", principal)
 
 	// refresh routing table
 	// TODO: this api seems backwards...push down into table?
 	rt := b.RoutingTable()
-	writers, _ := rt.WritersFor(rt.DefaultDb)
 
-	log.Printf("trying to auth %s to backend host %s\n", principal, writers[0])
-	conn, err := authClient(hello.Data, "tcp", writers[0], b.tls)
-	return bolt.NewDirectConn(conn), err
+	// try authing first with the default db writer before we try others
+	// this way we can fail fast and not spam a bad set of credentials
+	writers, _ := rt.WritersFor(rt.DefaultDb)
+	defaultWriter := writers[0]
+
+	log.Printf("trying to auth %s to host %s\n", principal, defaultWriter)
+	conn, err := authClient(hello.Data, "tcp", defaultWriter, b.tls)
+	if err != nil {
+		return nil, err
+	}
+
+	// ok, now to get the rest
+	conns := make(map[string]bolt.BoltConn, len(rt.Hosts))
+	conns[defaultWriter] = bolt.NewDirectConn(conn)
+
+	// we'll need a channel to collect results as we're going async
+	type pair struct {
+		conn bolt.BoltConn
+		host string
+	}
+	c := make(chan pair, len(rt.Hosts)+1)
+	var wg sync.WaitGroup
+	for host := range rt.Hosts {
+		if host != defaultWriter {
+			// done this one already
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				conn, err := authClient(hello.Data, "tcp", host, b.tls)
+				if err != nil {
+					log.Printf("failed to auth %s to %s!?\n", principal, host)
+					return
+				}
+				c <- pair{bolt.NewDirectConn(conn), host}
+			}()
+		}
+	}
+
+	wg.Wait()
+	close(c)
+
+	// build our connection map
+	for p := range c {
+		conns[p.host] = p.conn
+	}
+
+	log.Printf("auth'd principal to %d hosts\n", len(conns))
+	return conns, err
 }
