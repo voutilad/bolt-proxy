@@ -314,7 +314,7 @@ func getNewRoutingTable(driver *neo4j.Driver) (*RoutingTable, error) {
 	}
 
 	log.Printf("updated routing table: %s\n", &rt)
-	log.Printf("known hosts look like: %s\n", rt.Hosts)
+	log.Printf("known hosts look like: %v\n", rt.Hosts)
 
 	return &rt, nil
 }
