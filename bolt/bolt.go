@@ -106,9 +106,10 @@ func LogMessage(who string, msg *Message) {
 		end = len(msg.Data)
 		suffix = ""
 	}
-	if msg.T == BeginMsg || msg.T == RunMsg {
+	switch msg.T {
+	case BeginMsg, RunMsg, FailureMsg:
 		log.Printf("[%s] <%s>: %#v\n%s\n", who, msg.T, msg.Data, msg.Data)
-	} else {
+	default:
 		log.Printf("[%s] <%s>: %#v%s\n", who, msg.T, msg.Data[:end], suffix)
 	}
 }
