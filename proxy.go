@@ -253,6 +253,12 @@ func handleBoltConn(client bolt.BoltConn, b *backend.Backend) {
 			}
 		case <-time.After(5 * time.Minute):
 			log.Println("client idle timeout of 5 mins")
+			continue
+		}
+
+		if msg == nil {
+			// happens during websocket timeout?
+			panic("msg is nil")
 		}
 
 		switch msg.T {
