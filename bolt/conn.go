@@ -137,7 +137,7 @@ func NewWsConn(c io.ReadWriteCloser) WsConn {
 
 	go func() {
 		for {
-			message, err := ws.readMessage()
+			messages, err := ws.readMessages()
 			if err != nil {
 				if err == io.EOF {
 					log.Println("bolt ws connection hung-up")
@@ -147,7 +147,12 @@ func NewWsConn(c io.ReadWriteCloser) WsConn {
 				log.Printf("ws bolt connection error! %s\n", err)
 				return
 			}
-			msgchan <- message
+			for _, message := range messages {
+				if message == nil {
+					panic("ws message = nil!")
+				}
+				msgchan <- message
+			}
 		}
 	}()
 
@@ -158,7 +163,13 @@ func (c WsConn) R() <-chan *Message {
 	return c.r
 }
 
-func (c WsConn) readMessage() (*Message, error) {
+// Read 0 or many Bolt Messages from a WebSocket frame since, apparently,
+// small Bolt Messages sometimes get packed into a single Frame(?!).
+//
+// For example, I've seen RUN + PULL all in 1 WebSocket frame.
+func (c WsConn) readMessages() ([]*Message, error) {
+	messages := make([]*Message, 0)
+
 	header, err := ws.ReadHeader(c.conn)
 	if err != nil {
 		return nil, err
@@ -168,8 +179,8 @@ func (c WsConn) readMessage() (*Message, error) {
 	case ws.OpClose:
 		return nil, io.EOF
 	case ws.OpPing, ws.OpPong, ws.OpContinuation, ws.OpText:
-		msg := fmt.Sprintf("unsupported websocket opcode: %v\n", header.OpCode)
-		return nil, errors.New(msg)
+		panic(fmt.Sprintf("unsupported websocket opcode: %v\n", header.OpCode))
+		// return nil, errors.New(msg)
 	}
 
 	// TODO: handle header.Length == 0 situations?
@@ -177,6 +188,7 @@ func (c WsConn) readMessage() (*Message, error) {
 		return nil, errors.New("zero length header?!")
 	}
 
+	// TODO: under-reads!!!
 	n, err := c.conn.Read(c.buf[:header.Length])
 	if err != nil {
 		return nil, err
@@ -187,18 +199,30 @@ func (c WsConn) readMessage() (*Message, error) {
 		header.Masked = false
 	}
 
-	msgtype := IdentifyType(c.buf[:header.Length])
-	if msgtype == UnknownMsg {
-		return nil, errors.New("could not determine message type")
+	// WebSocket frames might contain multiple bolt messages...oh, joy
+	// XXX: for now we don't look for chunks across frame boundaries
+	pos := 0
+	for pos < int(header.Length) {
+		msglen := int(binary.BigEndian.Uint16(c.buf[pos : pos+2]))
+
+		msgtype := IdentifyType(c.buf[pos:])
+		if msgtype == UnknownMsg {
+			return nil, errors.New("could not determine message type")
+		}
+
+		data := make([]byte, msglen+4)
+		copy(data, c.buf[pos:pos+msglen+4])
+		msg := Message{
+			T:    msgtype,
+			Data: data,
+		}
+		//fmt.Printf("**** appending msg: %#v\n", msg)
+		messages = append(messages, &msg)
+
+		pos = pos + msglen + 4
 	}
 
-	data := make([]byte, header.Length)
-	copy(data, c.buf[:header.Length])
-
-	return &Message{
-		T:    msgtype,
-		Data: data,
-	}, nil
+	return messages, nil
 }
 func (c WsConn) WriteMessage(m *Message) error {
 	frame := ws.NewBinaryFrame(m.Data)

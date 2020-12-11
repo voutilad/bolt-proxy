@@ -29,14 +29,14 @@ func TestReadMessage(t *testing.T) {
 	recordData := []byte{0x0, 0x4, 0xb1, 0x71, 0x91, 0x1, 0x0, 0x0}
 	conn := NewDirectConn(NewTestBuffer(recordData))
 
-	message, err := conn.ReadMessage()
+	msg, err := conn.readMessage()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if message.T != RecordMsg {
-		t.Fatalf("expected RecordMsg, got %s\n", message.T)
+	if msg.T != RecordMsg {
+		t.Fatalf("expected RecordMsg, got %s\n", msg.T)
 	}
-	if !bytes.Equal(message.Data, recordData) {
-		t.Fatalf("expected bytes to match input, got %#v\n", message.Data)
+	if !bytes.Equal(msg.Data, recordData) {
+		t.Fatalf("expected bytes to match input, got %#v\n", msg.Data)
 	}
 }

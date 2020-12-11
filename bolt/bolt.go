@@ -1,7 +1,6 @@
 package bolt
 
 import (
-	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -68,38 +67,7 @@ func TypeFromByte(b byte) Type {
 	}
 }
 
-// Try to parse a byte array into zero or many Bolt Messages with any remaining
-// byte array chunk left over.
-func Parse(buf []byte) ([]Message, []byte, error) {
-	messages := make([]Message, 0)
-	var chunk []byte
-
-	for i := 0; i < len(buf); {
-		msglen := int(binary.BigEndian.Uint16(buf[i : i+2]))
-		if msglen+i+4 > len(buf) {
-			chunk = buf[i:]
-			break
-		}
-
-		msg := buf[i : i+msglen+4]
-
-		if !bytes.HasSuffix(msg, []byte{0x00, 0x00}) {
-			panic(fmt.Sprintf("DEBUG [bad message] %#v\n", msg))
-			return messages, chunk, errors.New("bad message: missing suffix")
-		}
-
-		msgType := IdentifyType(msg)
-		i = i + len(msg)
-
-		messages = append(messages, Message{msgType, msg})
-	}
-
-	return messages, chunk, nil
-}
-
 func LogMessage(who string, msg *Message) {
-	//log.Printf("[%s] <%s>:\t%#v\n%s\n", who, msg.T, msg.Data, msg.Data)
-
 	end := 64
 	suffix := fmt.Sprintf("...+%d bytes", len(msg.Data))
 	if len(msg.Data) < 64 {
