@@ -15,8 +15,8 @@ with neo4j.GraphDatabase.driver("bolt://localhost:8888", auth=("neo4j", "passwor
     with driver.session(database="neo4j") as s:
         s.read_transaction(do("CALL dbms.functions()"))
         s.read_transaction(do("CALL dbms.procedures()"))
-        #s.read_transaction(do("CALL db.schema.visualization()"))
-        #s.read_transaction(do("CALL db.indexes()"))
-        #s.read_transaction(do("CALL dbms.clientConfig()"))
-        #s.read_transaction(do("CALL dbms.showCurrentUser()"))
+        s.read_transaction(do("CALL db.schema.visualization()"))
+        s.read_transaction(do("CALL db.indexes()"))
+        s.read_transaction(do("CALL dbms.clientConfig()"))
+        s.read_transaction(do("CALL dbms.showCurrentUser()"))
 

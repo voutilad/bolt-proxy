@@ -28,9 +28,10 @@ type DirectConn struct {
 
 // Used for WebSocket-based Bolt connections
 type WsConn struct {
-	conn io.ReadWriteCloser
-	buf  []byte
-	r    <-chan *Message
+	conn     io.ReadWriteCloser
+	buf      []byte
+	r        <-chan *Message
+	chunking bool
 }
 
 func NewDirectConn(c io.ReadWriteCloser) DirectConn {
@@ -131,9 +132,15 @@ func (c DirectConn) Close() error {
 func NewWsConn(c io.ReadWriteCloser) WsConn {
 	msgchan := make(chan *Message)
 	ws := WsConn{
-		conn: c,
-		buf:  make([]byte, 1024*1024),
-		r:    msgchan,
+		conn:     c,
+		buf:      make([]byte, 1024*32),
+		r:        msgchan,
+		chunking: false,
+	}
+
+	// 0xff out the buffer
+	for i := 0; i < len(ws.buf); i++ {
+		ws.buf[i] = 0xff
 	}
 
 	go func() {
@@ -207,17 +214,16 @@ func (c WsConn) readMessages() ([]*Message, error) {
 	// WebSocket frames might contain multiple bolt messages...oh, joy
 	// XXX: for now we don't look for chunks across frame boundaries
 	pos := 0
-	chunking := false
 
 	for pos < int(header.Length) {
 		msglen := int(binary.BigEndian.Uint16(c.buf[pos : pos+2]))
 
 		// since we've already got the data in our buffer, we can
-		// just peek to see if it's complete or chunked
-		if !bytes.Equal([]byte{0x0, 0x0}, c.buf[msglen:msglen+2]) {
-			chunking = true
+		// peek to see if we're about to or still chunking (or not)
+		if bytes.Equal([]byte{0x0, 0x0}, c.buf[pos+msglen+2:pos+msglen+4]) {
+			c.chunking = false
 		} else {
-			chunking = false
+			c.chunking = true
 		}
 
 		// we'll let the combination of the type and the chunking
@@ -225,8 +231,10 @@ func (c WsConn) readMessages() ([]*Message, error) {
 		// afterwards, so maaaaaybe there was a false positive
 		sizeOfMsg := msglen + 4
 		msgtype := IdentifyType(c.buf[pos:])
-		if msgtype == UnknownMsg && chunking {
+		if msgtype == UnknownMsg {
 			msgtype = ChunkedMsg
+		}
+		if c.chunking {
 			sizeOfMsg = msglen + 2
 		}
 
@@ -240,6 +248,12 @@ func (c WsConn) readMessages() ([]*Message, error) {
 		messages = append(messages, &msg)
 
 		pos = pos + sizeOfMsg
+	}
+
+	// we need to 0xff out the buffer to prevent any secrets residing
+	// in memory, but also so we don't get false 0x00 0x00 padding
+	for i := 0; i < n; i++ {
+		c.buf[i] = 0xff
 	}
 
 	fmt.Printf("**** parsed %d ws bolt messages\n", len(messages))

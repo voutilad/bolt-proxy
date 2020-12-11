@@ -233,8 +233,8 @@ func handleBoltConn(client bolt.BoltConn, b *backend.Backend) {
 
 	// Some channels:
 	//  - reset: for signaling to our tx handler our client Reset
-	reset := make(chan bool, 1)
-	ack := make(chan bool, 1)
+	reset := make(chan bool)
+	ack := make(chan bool)
 
 	// Event loop: we enter in a state of HELLO being accepted
 	startingTx := false
@@ -338,14 +338,14 @@ func handleBoltConn(client bolt.BoltConn, b *backend.Backend) {
 				select {
 				case done <- true:
 					log.Println("asking current tx handler to halt")
+					select {
+					case <-ack:
+						log.Println("tx handler ack'd stop")
+					case <-time.After(15 * time.Second):
+						log.Println("!!! timeout waiting for ack from tx handler")
+					}
 				default:
 					log.Println("!!! couldn't send done to tx handler!")
-				}
-				select {
-				case <-ack:
-					log.Println("tx handler ack'd stop")
-				case <-time.After(15 * time.Second):
-					log.Println("!!! timeout waiting for ack from tx handler")
 				}
 			}
 
