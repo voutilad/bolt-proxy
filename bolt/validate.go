@@ -42,6 +42,8 @@ func ValidateHandshake(client, server []byte) ([]byte, error) {
 		return nil, errors.New("client handshake wrong size")
 	}
 
+	log.Printf("HANDSHAKE: client=%#v, server=%#v\n", client, server)
+
 	for i := 0; i < 4; i++ {
 		part := client[i*4 : i*4+4]
 		if bytes.Equal(server, part) {

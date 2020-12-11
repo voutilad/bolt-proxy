@@ -18,6 +18,10 @@ import (
 	"github.com/gobwas/ws"
 )
 
+// XXX temp monitor
+var ADD_HANDLER chan int = make(chan int)
+var DEL_HANDLER chan int = make(chan int)
+
 // "Splice" together a write-to BoltConn to a read-from BoltConn with
 // the given name (for logging purposes). Reads Messages from r,
 // validates some state, and relays the Messages to w.
@@ -29,6 +33,11 @@ func handleTx(client, server bolt.BoltConn, ack chan<- bool, reset, halt <-chan 
 	resetting := false
 
 	success := []byte{0x0, 0x3, 0xb1, 0x70, 0xa0, 0x0, 0x0}
+
+	ADD_HANDLER <- 1
+	defer func() {
+		DEL_HANDLER <- 1
+	}()
 
 	for !finished {
 		select {
@@ -65,7 +74,7 @@ func handleTx(client, server bolt.BoltConn, ack chan<- bool, reset, halt <-chan 
 	case ack <- true:
 		log.Println("tx handler stop ACK sent")
 	default:
-		panic("couldn't put value in ack channel?!")
+		log.Println("couldn't put value in ack channel?!")
 	}
 }
 
@@ -95,8 +104,8 @@ func handleClient(conn net.Conn, b *backend.Backend) {
 			return
 		}
 
-		// XXX hardcoded to bolt 4.2 for now
-		hardcodedVersion := []byte{0x0, 0x0, 0x02, 0x04}
+		// XXX hardcoded to bolt 4.1 for now
+		hardcodedVersion := []byte{0x0, 0x0, 0x01, 0x04}
 		match, err := bolt.ValidateHandshake(buf[:n], hardcodedVersion)
 		if err != nil {
 			log.Fatal(err)
@@ -323,6 +332,23 @@ func handleBoltConn(client bolt.BoltConn, b *backend.Backend) {
 			}
 			host := hosts[0]
 
+			// are we already using a host?
+			// if so try to stop the tx handler
+			if server != nil {
+				select {
+				case done <- true:
+					log.Println("asking current tx handler to halt")
+				default:
+					log.Println("!!! couldn't send done to tx handler!")
+				}
+				select {
+				case <-ack:
+					log.Println("tx handler ack'd stop")
+				case <-time.After(15 * time.Second):
+					log.Println("!!! timeout waiting for ack from tx handler")
+				}
+			}
+
 			// grab our host from our local pool
 			ok := false
 			server, ok = pool[host]
@@ -338,9 +364,10 @@ func handleBoltConn(client bolt.BoltConn, b *backend.Backend) {
 
 		// TODO: better connection state tracking?
 		if server != nil {
+			log.Printf(">>> writing %d byte message of type %s\n", len(msg.Data), msg.T)
 			err = server.WriteMessage(msg)
 			if err != nil {
-				log.Fatal(err)
+				panic(err)
 			}
 			bolt.LogMessage("P->S", msg)
 		}
@@ -375,6 +402,22 @@ func main() {
 		log.Println(http.ListenAndServe("localhost:6060", nil))
 	}()
 
+	// ------- handler reporter
+	go func() {
+		cnt := 0
+		for {
+			select {
+			case i := <-ADD_HANDLER:
+				cnt = cnt + i
+				log.Println("[REPORT: tx handler count =", cnt)
+			case i := <-DEL_HANDLER:
+				cnt = cnt - i
+				log.Println("[REPORT: tx handler count =", cnt)
+			case <-time.After(1 * time.Minute):
+				// timeout
+			}
+		}
+	}()
 	// ---------- BACK END
 	log.Println("Starting bolt-proxy back-end...")
 	backend, err := backend.NewBackend(username, password, proxyTo)

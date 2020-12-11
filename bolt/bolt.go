@@ -75,7 +75,7 @@ func LogMessage(who string, msg *Message) {
 		suffix = ""
 	}
 	switch msg.T {
-	case BeginMsg, RunMsg, FailureMsg:
+	case BeginMsg, FailureMsg:
 		log.Printf("[%s] <%s>: %#v\n%s\n", who, msg.T, msg.Data, msg.Data)
 	default:
 		log.Printf("[%s] <%s>: %#v%s\n", who, msg.T, msg.Data[:end], suffix)

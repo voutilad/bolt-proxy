@@ -11,12 +11,13 @@ import (
 	"github.com/voutilad/bolt-proxy/bolt"
 )
 
+// set max to v4.1 for now
 var handshake = []byte{
 	0x60, 0x60, 0xb0, 0x17,
-	0x00, 0x00, 0x02, 0x04,
 	0x00, 0x00, 0x01, 0x04,
 	0x00, 0x00, 0x00, 0x04,
-	0x00, 0x00, 0x00, 0x03}
+	0x00, 0x00, 0x00, 0x03,
+	0x00, 0x00, 0x00, 0x02}
 
 // horrible check to see if a client is able to auth
 func authClient(auth []byte, network, address string, useTls bool) (net.Conn, error) {
@@ -47,6 +48,7 @@ func authClient(auth []byte, network, address string, useTls bool) (net.Conn, er
 		conn.Close()
 		return nil, err
 	}
+	log.Printf("XXX target server responded with: %#v\n", buf[:n])
 
 	_, err = conn.Write(auth)
 	if err != nil {

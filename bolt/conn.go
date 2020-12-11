@@ -242,6 +242,8 @@ func (c WsConn) readMessages() ([]*Message, error) {
 		pos = pos + sizeOfMsg
 	}
 
+	fmt.Printf("**** parsed %d ws bolt messages\n", len(messages))
+
 	return messages, nil
 }
 func (c WsConn) WriteMessage(m *Message) error {
