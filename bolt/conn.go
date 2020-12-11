@@ -1,6 +1,7 @@
 package bolt
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -175,6 +176,10 @@ func (c WsConn) readMessages() ([]*Message, error) {
 		return nil, err
 	}
 
+	if !header.Fin {
+		panic("unsupported header fin")
+	}
+
 	switch header.OpCode {
 	case ws.OpClose:
 		return nil, io.EOF
@@ -202,16 +207,31 @@ func (c WsConn) readMessages() ([]*Message, error) {
 	// WebSocket frames might contain multiple bolt messages...oh, joy
 	// XXX: for now we don't look for chunks across frame boundaries
 	pos := 0
+	chunking := false
+
 	for pos < int(header.Length) {
 		msglen := int(binary.BigEndian.Uint16(c.buf[pos : pos+2]))
 
-		msgtype := IdentifyType(c.buf[pos:])
-		if msgtype == UnknownMsg {
-			return nil, errors.New("could not determine message type")
+		// since we've already got the data in our buffer, we can
+		// just peek to see if it's complete or chunked
+		if !bytes.Equal([]byte{0x0, 0x0}, c.buf[msglen:msglen+2]) {
+			chunking = true
+		} else {
+			chunking = false
 		}
 
-		data := make([]byte, msglen+4)
-		copy(data, c.buf[pos:pos+msglen+4])
+		// we'll let the combination of the type and the chunking
+		// flag dictate behavior as we're not cleaning our buffer
+		// afterwards, so maaaaaybe there was a false positive
+		sizeOfMsg := msglen + 4
+		msgtype := IdentifyType(c.buf[pos:])
+		if msgtype == UnknownMsg && chunking {
+			msgtype = ChunkedMsg
+			sizeOfMsg = msglen + 2
+		}
+
+		data := make([]byte, sizeOfMsg)
+		copy(data, c.buf[pos:pos+sizeOfMsg])
 		msg := Message{
 			T:    msgtype,
 			Data: data,
@@ -219,7 +239,7 @@ func (c WsConn) readMessages() ([]*Message, error) {
 		//fmt.Printf("**** appending msg: %#v\n", msg)
 		messages = append(messages, &msg)
 
-		pos = pos + msglen + 4
+		pos = pos + sizeOfMsg
 	}
 
 	return messages, nil
