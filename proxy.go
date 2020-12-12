@@ -357,8 +357,14 @@ func handleBoltConn(client bolt.BoltConn, b *backend.Backend) {
 				log.Println("no established connection for host", host)
 				return
 			}
-
 			log.Printf("grabbed conn for %s-access to db %s on host %s\n", mode, db, host)
+
+			// TODO: refactor channel handling...probably have handleTx() return new ones
+			// instead of reusing the same ones. If we don't create new ones, there could
+			// be lingering halt/ack messages. :-(
+			halt = make(chan bool, 1)
+			ack = make(chan bool, 1)
+
 			// kick off a new tx handler routine
 			go handleTx(client, server, ack, halt)
 			startingTx = false
