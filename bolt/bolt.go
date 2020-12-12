@@ -67,16 +67,25 @@ func TypeFromByte(b byte) Type {
 	}
 }
 
+const MAX_BYTES int = 32
+
+// Crude logging routine for helping debug bolt Messages. Tries not to clutter
+// output too much due to large messages while trying to deliniate who logged
+// the message.
 func LogMessage(who string, msg *Message) {
-	end := 64
+	end := MAX_BYTES
 	suffix := fmt.Sprintf("...+%d bytes", len(msg.Data))
-	if len(msg.Data) < 64 {
+	if len(msg.Data) < MAX_BYTES {
 		end = len(msg.Data)
 		suffix = ""
 	}
+
 	switch msg.T {
+	case HelloMsg:
+		// make sure we don't print the secrets in a Hello!
+		log.Printf("[%s] <%s>: %#v\n\n", who, msg.T, msg.Data[:4])
 	case BeginMsg, FailureMsg:
-		log.Printf("[%s] <%s>: %#v\n%s\n", who, msg.T, msg.Data, msg.Data)
+		log.Printf("[%s] <%s>: %#v\n%s\n", who, msg.T, msg.Data[:end], msg.Data)
 	default:
 		log.Printf("[%s] <%s>: %#v%s\n", who, msg.T, msg.Data[:end], suffix)
 	}
@@ -109,7 +118,6 @@ func IdentifyType(buf []byte) Type {
 // useful tiny map in a byte array. As such it does not tell you where that
 // map ends in the array!
 func ParseTinyMap(buf []byte) (map[string]interface{}, int, error) {
-	// fmt.Printf("tinymap debug: %#v\n", buf)
 	if buf == nil {
 		panic("cannot parse nil byte array for structs")
 	}
@@ -129,9 +137,7 @@ func ParseTinyMap(buf []byte) (map[string]interface{}, int, error) {
 	numMembers := int(buf[pos] & 0xf)
 	pos++
 
-	//	fmt.Printf("XXX DEBUG numMembers: %d\n", numMembers)
 	for i := 0; i < numMembers; i++ {
-		//		fmt.Printf("XXX DEBUG i = %d, pos = %d\n", i, pos)
 		// map keys are tiny-strings typically
 		name, n, err := ParseTinyString(buf[pos:])
 		if err != nil {
@@ -163,7 +169,6 @@ func ParseTinyMap(buf []byte) (map[string]interface{}, int, error) {
 				panic(err)
 				return result, pos, err
 			}
-			//		log.Printf("DEBUG tiny-array: n=%d, val=%v\n", n, val)
 			result[name] = val
 			pos = pos + n
 		case 0xd: // string
@@ -245,7 +250,6 @@ func ParseInt(buf []byte) (int, int, error) {
 //
 // Otherwise, return an empty string, 0, and an error.
 func ParseTinyString(buf []byte) (string, int, error) {
-	//	fmt.Printf("DEBUG: ParseTinyString: %#v\n", buf)
 	if len(buf) == 0 || buf[0]>>4 != 0x8 {
 		return "", 0, errors.New("expected tiny-string!")
 	}

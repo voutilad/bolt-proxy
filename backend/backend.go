@@ -59,8 +59,10 @@ func (b *Backend) RoutingTable() *RoutingTable {
 
 // For now, we'll authenticate to all known hosts up-front to simplify things.
 // So for a given Hello message, use it to auth against all hosts known in the
-// current routing table. Returns an map[string] of hosts to bolt.BoltConn's
-// if successful, an empty map and an error if not.
+// current routing table.
+//
+// Returns an map[string] of hosts to bolt.BoltConn's if successful, an empty
+// map and an error if not.
 func (b *Backend) Authenticate(hello *bolt.Message) (map[string]bolt.BoltConn, error) {
 	if hello.T != bolt.HelloMsg {
 		panic("authenticate requires a Hello message")
@@ -82,7 +84,7 @@ func (b *Backend) Authenticate(hello *bolt.Message) (map[string]bolt.BoltConn, e
 	// TODO: this api seems backwards...push down into table?
 	rt := b.RoutingTable()
 
-	// try authing first with the default db writer before we try others
+	// Try authing first with the default db writer before we try others
 	// this way we can fail fast and not spam a bad set of credentials
 	writers, _ := rt.WritersFor(rt.DefaultDb)
 	defaultWriter := writers[0]
@@ -93,11 +95,12 @@ func (b *Backend) Authenticate(hello *bolt.Message) (map[string]bolt.BoltConn, e
 		return nil, err
 	}
 
-	// ok, now to get the rest
+	// Ok, now to get the rest
 	conns := make(map[string]bolt.BoltConn, len(rt.Hosts))
 	conns[defaultWriter] = bolt.NewDirectConn(conn)
 
-	// we'll need a channel to collect results as we're going async
+	// We'll need a channel to collect results as we're going to auth
+	// to all hosts asynchronously
 	type pair struct {
 		conn bolt.BoltConn
 		host string
@@ -105,8 +108,8 @@ func (b *Backend) Authenticate(hello *bolt.Message) (map[string]bolt.BoltConn, e
 	c := make(chan pair, len(rt.Hosts)+1)
 	var wg sync.WaitGroup
 	for host := range rt.Hosts {
+		// skip the host we already used to test auth
 		if host != defaultWriter {
-			// done this one already
 			wg.Add(1)
 			go func(h string) {
 				defer wg.Done()
@@ -124,7 +127,6 @@ func (b *Backend) Authenticate(hello *bolt.Message) (map[string]bolt.BoltConn, e
 	wg.Wait()
 	close(c)
 
-	// build our connection map
 	for p := range c {
 		conns[p.host] = p.conn
 	}

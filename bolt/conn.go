@@ -13,6 +13,13 @@ import (
 
 // An abstraction of a Bolt-aware io.ReadWriterCloser. Allows for sending and
 // receiving Messages, abstracting away the nuances of the transport.
+//
+// R() should simply be a means of accessing the channel containining any
+// available Messages. (Might rename this later.) They should be handled async
+// by the conncetion instance.
+//
+// WriteMessage() should synchronously try to write a Bolt Message to the
+// connection.
 type BoltConn interface {
 	R() <-chan *Message
 	WriteMessage(*Message) error
@@ -21,10 +28,9 @@ type BoltConn interface {
 
 // Designed for operating direct (e.g. TCP/IP-only) Bolt connections
 type DirectConn struct {
-	conn     io.ReadWriteCloser
-	buf      []byte
-	r        <-chan *Message
-	chunking bool
+	conn io.ReadWriteCloser
+	buf  []byte
+	r    <-chan *Message
 }
 
 // Used for WebSocket-based Bolt connections
@@ -35,19 +41,28 @@ type WsConn struct {
 	chunking bool
 }
 
+// Create a new Direct Bolt Connection that uses simple Read/Write calls
+// to transfer data.
+//
+// Note: the buffer size of 1024*128 is based off some manual testing as
+// it was found 1024*64 was not enough, for instance, as some messages
+// larger than 64kb have been encountered.
 func NewDirectConn(c io.ReadWriteCloser) DirectConn {
 	msgchan := make(chan *Message)
 	dc := DirectConn{
-		conn:     c,
-		buf:      make([]byte, 1024*128),
-		r:        msgchan,
-		chunking: false,
+		conn: c,
+		buf:  make([]byte, 1024*128),
+		r:    msgchan,
 	}
 
+	// Preset the buffer to be non-0x00, since zeros are
+	// used as end-of-message markers
 	for i := 0; i < len(dc.buf); i++ {
 		dc.buf[i] = 0xff
 	}
 
+	// XXX: this design is ok for now, but in the event this go routine
+	// aborts, it's not clear what the behavior will be of the BoltChan.
 	go func() {
 		for {
 			message, err := dc.readMessage()
@@ -72,6 +87,14 @@ func (c DirectConn) R() <-chan *Message {
 }
 
 // Read a single bolt Message, returning a point to it, or an error
+//
+// TODO: this needs a redesign...not sure best approach here, but
+// maybe involving a BufferedReader so we can more easily peek at
+// if we've got a chunked message or a full message. Then we could
+// adapt this to how the WsConn version works, which returns 0 or
+// many messages at once.
+//
+// Also, would be good to NOT DECHUNK like this currently does.
 func (c DirectConn) readMessage() (*Message, error) {
 	var n int
 	var err error
@@ -87,10 +110,9 @@ func (c DirectConn) readMessage() (*Message, error) {
 		if n < 2 {
 			underReads++
 			if underReads > 5 {
-				panic("too many under reads")
+				panic("too many under reads...something's up")
 			}
 			continue
-			//panic("under-read?!")
 		}
 		msglen := int(binary.BigEndian.Uint16(c.buf[pos : pos+n]))
 		pos = pos + n
@@ -261,7 +283,6 @@ func (c WsConn) readMessages() ([]*Message, error) {
 			T:    msgtype,
 			Data: data,
 		}
-		//fmt.Printf("**** appending msg: %#v\n", msg)
 		messages = append(messages, &msg)
 
 		pos = pos + sizeOfMsg
@@ -272,8 +293,6 @@ func (c WsConn) readMessages() ([]*Message, error) {
 	for i := 0; i < n; i++ {
 		c.buf[i] = 0xff
 	}
-
-	fmt.Printf("**** parsed %d ws bolt messages\n", len(messages))
 
 	return messages, nil
 }

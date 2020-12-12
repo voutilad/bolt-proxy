@@ -18,8 +18,8 @@ import (
 // to new instances into the channel C. (Similar to how time.Ticker puts the
 // current time into its channel.)
 //
-// Known issue: if the channel isn't read, new values drop. This meas the value
-// could be stale and needs to be checked.
+// Before it puts a new pointer in the channel, it tries to empty it, which
+// hopefully reduces the chance of receiving stale entries.
 type Monitor struct {
 	C      <-chan *RoutingTable
 	halt   chan bool
@@ -50,6 +50,12 @@ func newConfigurer(hosts []string) func(c *neo4j.Config) {
 	}
 }
 
+// Construct and start a new routing table Monitor using the provided user,
+// password, and uri as arguments to the underlying neo4j.Driver. Returns a
+// pointer to the Monitor on success, or nil and an error on failure.
+//
+// Any additional hosts provided will be used as part of a custom address
+// resolution function via the neo4j.Driver.
 func NewMonitor(user, password, uri string, hosts ...string) (*Monitor, error) {
 	c := make(chan *RoutingTable, 1)
 	h := make(chan bool, 1)
@@ -122,7 +128,7 @@ type table struct {
 	writers []string
 }
 
-// Denormalize the routing table
+// Denormalize the routing table to make post-processing easier
 const ROUTING_QUERY = `
 UNWIND $names AS name
 CALL dbms.routing.getRoutingTable({}, name)
@@ -192,6 +198,12 @@ func queryRoutingTable(driver *neo4j.Driver, names []string) (map[string]table, 
 	return tableMap, nil
 }
 
+// Given a neo4j.Transaction tx, collect the routing table maps for each of
+// the databases in names. Since this should run in a transaction work function
+// we return a generic interface{} on success, or nil and an error if failed.
+//
+// The true data type is a map[string]table, mapping database names to their
+// respective tables.
 func routingTableTx(tx neo4j.Transaction, names []string) (interface{}, error) {
 	params := make(map[string]interface{}, 1)
 	params["names"] = names
@@ -269,6 +281,10 @@ func routingTableTx(tx neo4j.Transaction, names []string) (interface{}, error) {
 	return tableMap, nil
 }
 
+// Using a pointer to a connected neo4j.Driver, orchestrate fetching the
+// database names and get the current routing table for each.
+//
+// XXX: this is pretty heavy weight :-(
 func getNewRoutingTable(driver *neo4j.Driver) (*RoutingTable, error) {
 	names, err := queryDbNames(driver)
 	if err != nil {

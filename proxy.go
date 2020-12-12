@@ -8,7 +8,7 @@ import (
 	"net"
 	"time"
 
-	// debuggin'
+	// debuggin' -- used for runtime profiling/debugging
 	"net/http"
 	_ "net/http/pprof"
 
@@ -18,26 +18,23 @@ import (
 	"github.com/gobwas/ws"
 )
 
-// XXX temp monitor
-var ADD_HANDLER chan int = make(chan int)
-var DEL_HANDLER chan int = make(chan int)
+// A basic idle timeout duration for now
+const MAX_IDLE_MINS int = 30
 
-// "Splice" together a write-to BoltConn to a read-from BoltConn with
-// the given name (for logging purposes). Reads Messages from r,
-// validates some state, and relays the Messages to w.
+// Primary Transaction server-side event handler, collecting Messages from
+// the backend Bolt server and writing them to the given client.
 //
-// Before aborting, sends a bool via the provided done channel to
-// signal any waiting go routine.
-func handleTx(client, server bolt.BoltConn, ack chan<- bool, reset, halt <-chan bool) {
+// Since this should be running async to process server Messages as they
+// arrive, two channels are provided for signaling:
+//
+//  ack: used for letting this handler to signal that it's completed and
+//       stopping execution, basically a way to confirm the requested halt
+//
+// halt: used by an external routine to request this handler to cleanly
+//       stop execution
+//
+func handleTx(client, server bolt.BoltConn, ack chan<- bool, halt <-chan bool) {
 	finished := false
-	resetting := false
-
-	success := []byte{0x0, 0x3, 0xb1, 0x70, 0xa0, 0x0, 0x0}
-
-	ADD_HANDLER <- 1
-	defer func() {
-		DEL_HANDLER <- 1
-	}()
 
 	for !finished {
 		select {
@@ -49,26 +46,25 @@ func handleTx(client, server bolt.BoltConn, ack chan<- bool, reset, halt <-chan 
 					panic(err)
 				}
 				bolt.LogMessage("C<-P", msg)
+
+				// if know the server side is saying goodbye,
+				// we abort the loop
 				if msg.T == bolt.GoodbyeMsg {
-					finished = true
-				} else if resetting && bytes.Equal(success, msg.Data) {
-					log.Println("tx handler saw SUCCESS and was asked to reset")
 					finished = true
 				}
 			} else {
 				log.Println("potential server hangup")
 				finished = true
 			}
-		case <-reset:
-			resetting = true
+
 		case <-halt:
 			finished = true
-		case <-time.After(5 * time.Minute):
+
+		case <-time.After(time.Duration(MAX_IDLE_MINS) * time.Minute):
 			log.Println("timeout reading server!")
 			finished = true
 		}
 	}
-	log.Println("!! txhandler stopped")
 
 	select {
 	case ack <- true:
@@ -78,8 +74,11 @@ func handleTx(client, server bolt.BoltConn, ack chan<- bool, reset, halt <-chan 
 	}
 }
 
-// Identify if a new connection is valid Bolt or Bolt-on-Websockets.
-// If so, pass it to the proper handler. Otherwise, close the connection.
+// Identify if a new connection is valid Bolt or Bolt-over-Websocket
+// connection based on handshakes.
+//
+// If so, wrap the incoming conn into a BoltConn and pass it off to
+// a client handler
 func handleClient(conn net.Conn, b *backend.Backend) {
 	defer func() {
 		log.Println("closing client connection", conn)
@@ -97,14 +96,15 @@ func handleClient(conn net.Conn, b *backend.Backend) {
 	}
 
 	if bytes.Equal(buf[:4], []byte{0x60, 0x60, 0xb0, 0x17}) {
-		// read bytes for handshake message
+		// First case: we have a direct bolt client connection
 		n, err := conn.Read(buf[:20])
 		if err != nil {
 			log.Println("error peeking at connection from", conn.RemoteAddr())
 			return
 		}
 
-		// XXX hardcoded to bolt 4.1 for now
+		// XXX: hardcoded to bolt 4.1 for now, see comment in
+		// the websocket logic below for why :-(
 		hardcodedVersion := []byte{0x0, 0x0, 0x01, 0x04}
 		match, err := bolt.ValidateHandshake(buf[:n], hardcodedVersion)
 		if err != nil {
@@ -119,10 +119,12 @@ func handleClient(conn net.Conn, b *backend.Backend) {
 		handleBoltConn(bolt.NewDirectConn(conn), b)
 
 	} else if bytes.Equal(buf[:4], []byte{0x47, 0x45, 0x54, 0x20}) {
-		// "GET ", so websocket? :-(
+		// Second case, we have an HTTP connection that might just
+		// be a WebSocket upgrade
 		n, _ = conn.Read(buf[4:])
 
-		// build a ReadWriter to pass to the upgrader
+		// Build something implementing the io.ReadWriter interface
+		// to pass to the upgrader routine
 		iobuf := bytes.NewBuffer(buf[:n+4])
 		_, err := ws.Upgrade(iobuf)
 		if err != nil {
@@ -130,7 +132,7 @@ func handleClient(conn net.Conn, b *backend.Backend) {
 				conn.RemoteAddr(), err)
 			return
 		}
-		// relay the upgrade response
+		// Relay the upgrade response
 		_, err = io.Copy(conn, iobuf)
 		if err != nil {
 			log.Printf("failed to copy upgrade to client %s\n",
@@ -138,8 +140,7 @@ func handleClient(conn net.Conn, b *backend.Backend) {
 			return
 		}
 
-		// TODO: finish handling logic, for now try to read a header
-		// and initial payload
+		// After upgrade, we should get a WebSocket message with header
 		header, err := ws.ReadHeader(conn)
 		if err != nil {
 			log.Printf("failed to read ws header from client %s: %s\n",
@@ -155,38 +156,48 @@ func handleClient(conn net.Conn, b *backend.Backend) {
 		if header.Masked {
 			ws.Cipher(buf[:n], header.Mask, 0)
 		}
-		// log.Printf("GOT WS PAYLOAD: %#v\n", buf[:n])
 
-		// we expect we can now do the initial Bolt handshake
+		// We expect we can now do the initial Bolt handshake
 		magic, handshake := buf[:4], buf[4:20] // blaze it
 		valid, err := bolt.ValidateMagic(magic)
 		if !valid {
 			log.Fatal(err)
 		}
 
-		// Browser uses an older 4.1 driver?!
+		// Browser uses an older 4.1 driver?! For now since we don't
+		// negotiate client & server side bolt versions, let's use
+		// Bolt v4.1
 		hardcodedVersion := []byte{0x0, 0x0, 0x1, 0x4}
 		match, err := bolt.ValidateHandshake(handshake, hardcodedVersion)
 		if err != nil {
 			log.Fatal(err)
 		}
 
+		// Complete Bolt handshake via WebSocket frame
 		frame := ws.NewBinaryFrame(match)
 		if err = ws.WriteFrame(conn, frame); err != nil {
 			log.Fatal(err)
 		}
 
-		// websocket bolt
+		// Let there be Bolt-via-WebSockets!
 		handleBoltConn(bolt.NewWsConn(conn), b)
 	} else {
+		// not bolt, not http...something else?
 		log.Printf("client %s is speaking gibberish: %#v\n",
 			conn.RemoteAddr(), buf[:4])
 	}
 }
 
-// Primary Client connection handler
+// Primary Transaction client-side event handler, collecting Messages from
+// the Bolt client and finding ways to switch them to the proper backend.
+//
+// The event loop
+//
+// TOOD: this logic should be split out between the authentication and the
+// event loop. For now, this does both.
 func handleBoltConn(client bolt.BoltConn, b *backend.Backend) {
-	// intercept HELLO message for authentication
+	// Intercept HELLO message for authentication and hold onto it
+	// for use in backend authentication
 	var hello *bolt.Message
 	select {
 	case msg, ok := <-client.R():
@@ -231,19 +242,14 @@ func handleBoltConn(client bolt.BoltConn, b *backend.Backend) {
 		log.Fatal(err)
 	}
 
-	// Some channels:
-	//  - reset: for signaling to our tx handler our client Reset
-	reset := make(chan bool)
-	ack := make(chan bool)
-
-	// Event loop: we enter in a state of HELLO being accepted
+	// Time to begin the client-side event loop!
 	startingTx := false
 	manualTx := false
-	resetting := false
-	done := make(chan bool)
+	halt := make(chan bool, 1)
+	ack := make(chan bool, 1)
+
 	var server bolt.BoltConn
 	for {
-		// get the next event
 		var msg *bolt.Message
 		select {
 		case m, ok := <-client.R():
@@ -253,16 +259,16 @@ func handleBoltConn(client bolt.BoltConn, b *backend.Backend) {
 			} else {
 				log.Println("potential client hangup")
 				select {
-				case done <- true:
-					log.Println("client hungup, asking tx to stop")
+				case halt <- true:
+					log.Println("client hungup, asking tx to halt")
 				default:
-					log.Println("failed to send done message to tx handler")
+					log.Println("failed to send halt message to tx handler")
 				}
 				return
 			}
-		case <-time.After(5 * time.Minute):
-			log.Println("client idle timeout of 5 mins")
-			continue
+		case <-time.After(time.Duration(MAX_IDLE_MINS) * time.Minute):
+			log.Println("client idle timeout")
+			return
 		}
 
 		if msg == nil {
@@ -270,6 +276,9 @@ func handleBoltConn(client bolt.BoltConn, b *backend.Backend) {
 			panic("msg is nil")
 		}
 
+		// Inspect the client's message to discern transaction state
+		// We need to figure out if a transaction is starting and
+		// what kind of transaction (manual, auto, etc.) it might be.
 		switch msg.T {
 		case bolt.BeginMsg:
 			startingTx = true
@@ -279,26 +288,15 @@ func handleBoltConn(client bolt.BoltConn, b *backend.Backend) {
 				startingTx = true
 			}
 		case bolt.CommitMsg, bolt.RollbackMsg:
-			log.Println("client asked for", msg.T)
 			manualTx = false
 			startingTx = false
-			/*		case bolt.ResetMsg:
-					log.Println("resetting")
-					manualTx = false
-					startingTx = false
-					resetting = true
-					select {
-					case reset <- true:
-						log.Println("requested reset")
-					default:
-						panic("reset queue full!?")
-					}*/
 		}
 
+		// XXX: This is a mess, but if we're starting a new transaction
+		// we need to find a new connection to switch to
 		if startingTx {
 			mode, _ := bolt.ValidateMode(msg.Data)
 			rt := b.RoutingTable()
-
 			db := rt.DefaultDb
 
 			// get the db name, if any. otherwise, use default
@@ -314,7 +312,7 @@ func handleBoltConn(client bolt.BoltConn, b *backend.Backend) {
 				}
 			}
 
-			// just choose the first one for now...something simple
+			// Just choose the first one for now...something simple
 			var hosts []string
 			if mode == bolt.ReadMode {
 				hosts, err = rt.ReadersFor(db)
@@ -325,31 +323,32 @@ func handleBoltConn(client bolt.BoltConn, b *backend.Backend) {
 				log.Printf("couldn't find host for '%s' in routing table", db)
 			}
 
-			// at some point we have to figure out how to pick a host
 			if len(hosts) < 1 {
 				log.Println("empty hosts lists for database", db)
+				// TODO: return FailureMsg???
 				return
 			}
 			host := hosts[0]
 
-			// are we already using a host?
-			// if so try to stop the tx handler
+			// Are we already using a host? If so try to stop the
+			// current tx handler before we create a new one
 			if server != nil {
 				select {
-				case done <- true:
-					log.Println("asking current tx handler to halt")
+				case halt <- true:
+					log.Println("...asking current tx handler to halt")
 					select {
 					case <-ack:
 						log.Println("tx handler ack'd stop")
-					case <-time.After(15 * time.Second):
+					case <-time.After(5 * time.Second):
 						log.Println("!!! timeout waiting for ack from tx handler")
 					}
 				default:
-					log.Println("!!! couldn't send done to tx handler!")
+					// this shouldn't happen!
+					panic("couldn't send halt to tx handler!")
 				}
 			}
 
-			// grab our host from our local pool
+			// Grab our host from our local pool
 			ok := false
 			server, ok = pool[host]
 			if !ok {
@@ -358,30 +357,18 @@ func handleBoltConn(client bolt.BoltConn, b *backend.Backend) {
 			}
 
 			log.Printf("grabbed conn for %s-access to db %s on host %s\n", mode, db, host)
-			go handleTx(client, server, ack, reset, done)
+			// kick off a new tx handler routine
+			go handleTx(client, server, ack, halt)
 			startingTx = false
 		}
 
-		// TODO: better connection state tracking?
 		if server != nil {
-			log.Printf(">>> writing %d byte message of type %s\n", len(msg.Data), msg.T)
 			err = server.WriteMessage(msg)
 			if err != nil {
+				// TODO: figure out best way to handle failed writes
 				panic(err)
 			}
 			bolt.LogMessage("P->S", msg)
-		}
-
-		if resetting {
-			// wait here for ack
-			select {
-			case <-ack:
-				log.Println("server acked reset")
-			case <-time.After(30 * time.Second):
-				log.Println("no ack in 30s?!")
-				return
-			}
-			resetting = false
 		}
 	}
 }
@@ -402,22 +389,6 @@ func main() {
 		log.Println(http.ListenAndServe("localhost:6060", nil))
 	}()
 
-	// ------- handler reporter
-	go func() {
-		cnt := 0
-		for {
-			select {
-			case i := <-ADD_HANDLER:
-				cnt = cnt + i
-				log.Println("[REPORT: tx handler count =", cnt)
-			case i := <-DEL_HANDLER:
-				cnt = cnt - i
-				log.Println("[REPORT: tx handler count =", cnt)
-			case <-time.After(1 * time.Minute):
-				// timeout
-			}
-		}
-	}()
 	// ---------- BACK END
 	log.Println("Starting bolt-proxy back-end...")
 	backend, err := backend.NewBackend(username, password, proxyTo)
@@ -433,6 +404,7 @@ func main() {
 	}
 	log.Printf("Listening on %s\n", bindOn)
 
+	// ---------- Event Loop
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
