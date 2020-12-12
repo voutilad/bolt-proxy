@@ -282,17 +282,17 @@ func handleBoltConn(client bolt.BoltConn, b *backend.Backend) {
 			log.Println("client asked for", msg.T)
 			manualTx = false
 			startingTx = false
-		case bolt.ResetMsg:
-			log.Println("resetting")
-			manualTx = false
-			startingTx = false
-			resetting = true
-			select {
-			case reset <- true:
-				log.Println("requested reset")
-			default:
-				panic("reset queue full!?")
-			}
+			/*		case bolt.ResetMsg:
+					log.Println("resetting")
+					manualTx = false
+					startingTx = false
+					resetting = true
+					select {
+					case reset <- true:
+						log.Println("requested reset")
+					default:
+						panic("reset queue full!?")
+					}*/
 		}
 
 		if startingTx {

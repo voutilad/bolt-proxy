@@ -7,5 +7,7 @@ debug.watch("neo4j")
 with neo4j.GraphDatabase.driver("bolt://localhost:8888", auth=("neo4j", "password")) as driver:
     for i in range(1, 3):
         with driver.session(database="neo4j") as s:
-            s.run('return 1').consume()
+            r = s.run('return 1')
+            for i in r:
+                print(i)
 

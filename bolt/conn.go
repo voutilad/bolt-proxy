@@ -21,9 +21,10 @@ type BoltConn interface {
 
 // Designed for operating direct (e.g. TCP/IP-only) Bolt connections
 type DirectConn struct {
-	conn io.ReadWriteCloser
-	buf  []byte
-	r    <-chan *Message
+	conn     io.ReadWriteCloser
+	buf      []byte
+	r        <-chan *Message
+	chunking bool
 }
 
 // Used for WebSocket-based Bolt connections
@@ -37,9 +38,14 @@ type WsConn struct {
 func NewDirectConn(c io.ReadWriteCloser) DirectConn {
 	msgchan := make(chan *Message)
 	dc := DirectConn{
-		conn: c,
-		buf:  make([]byte, 1024*1024),
-		r:    msgchan,
+		conn:     c,
+		buf:      make([]byte, 1024*128),
+		r:        msgchan,
+		chunking: false,
+	}
+
+	for i := 0; i < len(dc.buf); i++ {
+		dc.buf[i] = 0xff
 	}
 
 	go func() {
@@ -65,10 +71,12 @@ func (c DirectConn) R() <-chan *Message {
 	return c.r
 }
 
+// Read a single bolt Message, returning a point to it, or an error
 func (c DirectConn) readMessage() (*Message, error) {
 	var n int
 	var err error
 
+	underReads := 0
 	pos := 0
 	for {
 		n, err = c.conn.Read(c.buf[pos : pos+2])
@@ -77,7 +85,12 @@ func (c DirectConn) readMessage() (*Message, error) {
 		}
 		// TODO: deal with this horrible issue!
 		if n < 2 {
-			panic("under-read?!")
+			underReads++
+			if underReads > 5 {
+				panic("too many under reads")
+			}
+			continue
+			//panic("under-read?!")
 		}
 		msglen := int(binary.BigEndian.Uint16(c.buf[pos : pos+n]))
 		pos = pos + n
@@ -103,6 +116,10 @@ func (c DirectConn) readMessage() (*Message, error) {
 	// Copy data into Message...
 	data := make([]byte, pos)
 	copy(data, c.buf[:pos])
+
+	for i := 0; i < pos; i++ {
+		c.buf[i] = 0xff
+	}
 
 	return &Message{
 		T:    t,
