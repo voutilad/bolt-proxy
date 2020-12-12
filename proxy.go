@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
 	"flag"
 	"io"
 	"log"
@@ -81,7 +82,8 @@ func handleTx(client, server bolt.BoltConn, ack chan<- bool, halt <-chan bool) {
 // a client handler
 func handleClient(conn net.Conn, b *backend.Backend) {
 	defer func() {
-		log.Println("closing client connection", conn)
+		log.Printf("closing client connection from %s\n",
+			conn.RemoteAddr())
 		conn.Close()
 	}()
 
@@ -377,11 +379,14 @@ func main() {
 	var bindOn string
 	var proxyTo string
 	var username, password string
+	var certFile, keyFile string
 
 	flag.StringVar(&bindOn, "bind", "localhost:8888", "host:port to bind to")
 	flag.StringVar(&proxyTo, "uri", "bolt://localhost:7687", "bolt uri for remote Neo4j")
 	flag.StringVar(&username, "user", "neo4j", "Neo4j username")
 	flag.StringVar(&password, "pass", "", "Neo4j password")
+	flag.StringVar(&certFile, "cert", "", "x509 certificate")
+	flag.StringVar(&keyFile, "key", "", "x509 private key")
 	flag.Parse()
 
 	// ---------- pprof debugger
@@ -398,11 +403,27 @@ func main() {
 
 	// ---------- FRONT END
 	log.Println("Starting bolt-proxy front-end...")
-	listener, err := net.Listen("tcp", bindOn)
-	if err != nil {
-		log.Fatal(err)
+	var listener net.Listener
+	if certFile == "" || keyFile == "" {
+		// non-tls
+		listener, err = net.Listen("tcp", bindOn)
+		if err != nil {
+			log.Fatal(err)
+		}
+		log.Printf("Listening on %s\n", bindOn)
+	} else {
+		// tls
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		config := &tls.Config{Certificates: []tls.Certificate{cert}}
+		listener, err = tls.Listen("tcp", bindOn, config)
+		if err != nil {
+			log.Fatal(err)
+		}
+		log.Printf("Listening for TLS connections on %s\n", bindOn)
 	}
-	log.Printf("Listening on %s\n", bindOn)
 
 	// ---------- Event Loop
 	for {

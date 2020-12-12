@@ -70,15 +70,14 @@ Now that I'm neck deep in this...here's where `bolt-proxy` stands:
    inflated/dechunked before being relayed...wip.)
 7. Picking leader vs. follower for write or read (respectively)
    transactions works.
+8. TLS support for client-side with default verification rules.
 
 ## What doesn't (yet) work:
-1. No support for TLS on the frontend (e.g. client-side), so you need
-   to tell your client to use `bolt://`
-2. No emulation of routing table, so if you use `neo4j://` schemes on
+1. No emulation of routing table, so if you use `neo4j://` schemes on
    the front-end, you'll probably bypass the proxy! (If the routing
    stuff gets pushed into Bolt, this might be easier to deal with.)
-3. No support for "routing policies"
-4. No smart pooling of connections...each client connection results in
+2. No support for "routing policies"
+3. No smart pooling of connections...each client connection results in
    a connection to *each* backend host.
 
 ## Other random known issues:
@@ -102,6 +101,10 @@ There are a few flags you can set to control things:
 Usage of ./bolt-proxy:
   -bind string
         host:port to bind to (default "localhost:8888")
+  -cert string
+        x509 certificate
+  -key string
+        x509 private key
   -pass string
         Neo4j password
   -uri string
