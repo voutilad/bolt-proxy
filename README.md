@@ -113,19 +113,32 @@ Usage of ./bolt-proxy:
         Neo4j username (default "neo4j")
 ```
 
+You can also use the follow environment variables to make
+configuration easier in the "cloud":
+
+- `BOLT_PROXY_BIND` -- host:port to bind to (e.g. "0.0.0.0:8888")
+- `BOLT_PROXY_URI` -- bolt uri for backend system(s) (e.g. "neo4j+s://host-1:7687")
+- `BOLT_PROXY_USER` -- neo4j user for the backend monitor
+- `BOLT_PROXY_PASSWORD` -- password for the backend neo4j user for use
+  by the monitor
+- `BOLT_PROXY_CERT` -- path to the x509 certificate (.pem) file
+- `BOLE_PROXY_KEY` -- path to the x509 private key file
+
+### Lifecycle
 When you start the proxy, it'll immediately try to connect to the
 target backend using the provided bolt uri, username, and password. It
 will then begin monitoring the routing table.
 
+### Connecting
 You then tell your client application (e.g. cypher-shell, Browser) to
 connect to `bolt://<your bind host:port>`. Keep in mind it has to use
-`bolt://` for now.
+`bolt://` for now!
 
 If the proxy is working properly, it should be seemless and the only
-thing you should notice is it's slower than a direct connection to the
-database :-P
+thing you should notice is it's _maybe_ slower than a direct
+connection to the database :-P
 
-> NOTE: keep in mind, the bolt-proxy will use the routing table
+> NOTE: Keep in mind that the bolt-proxy will use the routing table
 > reported by the backend. If you have advertised addresses set, make
 > sure they are resolvable **by this proxy**.
 

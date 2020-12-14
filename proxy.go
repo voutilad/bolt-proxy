@@ -404,18 +404,43 @@ func handleBoltConn(client bolt.BoltConn, b *backend.Backend) {
 	}
 }
 
-func main() {
-	var bindOn string
-	var proxyTo string
-	var username, password string
-	var certFile, keyFile string
+const (
+	DEFAULT_BIND string = "localhost:8888"
+	DEFAULT_URI  string = "bolt://localhost:7687"
+	DEFAULT_USER string = "neo4j"
+)
 
-	flag.StringVar(&bindOn, "bind", "localhost:8888", "host:port to bind to")
-	flag.StringVar(&proxyTo, "uri", "bolt://localhost:7687", "bolt uri for remote Neo4j")
-	flag.StringVar(&username, "user", "neo4j", "Neo4j username")
-	flag.StringVar(&password, "pass", "", "Neo4j password")
-	flag.StringVar(&certFile, "cert", "", "x509 certificate")
-	flag.StringVar(&keyFile, "key", "", "x509 private key")
+func main() {
+	var (
+		bindOn             string
+		proxyTo            string
+		username, password string
+		certFile, keyFile  string
+	)
+
+	bindOn, found := os.LookupEnv("BOLT_PROXY_BIND")
+	if !found {
+		bindOn = DEFAULT_BIND
+	}
+	proxyTo, found = os.LookupEnv("BOLT_PROXY_URI")
+	if !found {
+		proxyTo = DEFAULT_URI
+	}
+	username, found = os.LookupEnv("BOLT_PROXY_USER")
+	if !found {
+		username = DEFAULT_USER
+	}
+	password = os.Getenv("BOLT_PROXY_PASSWORD")
+	certFile = os.Getenv("BOLT_PROXY_CERT")
+	keyFile = os.Getenv("BOLT_PROXY_KEY")
+
+	// to keep it easy, let the defaults be populated by the env vars
+	flag.StringVar(&bindOn, "bind", bindOn, "host:port to bind to")
+	flag.StringVar(&proxyTo, "uri", proxyTo, "bolt uri for remote Neo4j")
+	flag.StringVar(&username, "user", username, "Neo4j username")
+	flag.StringVar(&password, "pass", password, "Neo4j password")
+	flag.StringVar(&certFile, "cert", certFile, "x509 certificate")
+	flag.StringVar(&keyFile, "key", keyFile, "x509 private key")
 	flag.Parse()
 
 	// We log to stdout because our parents raised us right
