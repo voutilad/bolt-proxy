@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
 	"time"
 
 	// debuggin' -- used for runtime profiling/debugging
@@ -416,6 +417,9 @@ func main() {
 	flag.StringVar(&certFile, "cert", "", "x509 certificate")
 	flag.StringVar(&keyFile, "key", "", "x509 private key")
 	flag.Parse()
+
+	// We log to stdout because our parents raised us right
+	log.SetOutput(os.Stdout)
 
 	// ---------- pprof debugger
 	go func() {
