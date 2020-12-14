@@ -370,6 +370,7 @@ func handleBoltConn(client bolt.BoltConn, b *backend.Backend) {
 			startingTx = false
 		}
 
+		// TODO: this connected/not-connected handling looks messy
 		if server != nil {
 			err = server.WriteMessage(msg)
 			if err != nil {
@@ -377,6 +378,27 @@ func handleBoltConn(client bolt.BoltConn, b *backend.Backend) {
 				panic(err)
 			}
 			bolt.LogMessage("P->S", msg)
+		} else {
+			// we have no connection since there's no tx...
+			// handle only specific, simple messages
+			switch msg.T {
+			case bolt.ResetMsg:
+				// XXX: Neo4j Desktop does this when defining a
+				// remote dbms connection.
+				// simply send empty success message
+				client.WriteMessage(&bolt.Message{
+					T: bolt.SuccessMsg,
+					Data: []byte{
+						0x00, 0x03,
+						0xb1, 0x70,
+						0xa0,
+						0x00, 0x00,
+					},
+				})
+			case bolt.GoodbyeMsg:
+				// bye!
+				return
+			}
 		}
 	}
 }
