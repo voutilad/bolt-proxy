@@ -72,7 +72,7 @@ func NewDirectConn(c io.ReadWriteCloser) DirectConn {
 					close(msgchan)
 					return
 				}
-				log.Printf("direct bolt connection error! %s\n", err)
+				log.Printf("direct bolt connection disconnect: %s\n", err)
 				return
 			}
 			msgchan <- message
@@ -191,7 +191,7 @@ func NewWsConn(c io.ReadWriteCloser) WsConn {
 					close(msgchan)
 					return
 				}
-				log.Printf("ws bolt connection error! %s\n", err)
+				log.Printf("ws bolt connection disconnect: %s\n", err)
 				return
 			}
 			for _, message := range messages {
