@@ -106,20 +106,20 @@ func handleClient(conn net.Conn, b *backend.Backend) {
 			return
 		}
 
-		// XXX: hardcoded to bolt 4.1 for now, see comment in
-		// the websocket logic below for why :-(
-		hardcodedVersion := []byte{0x0, 0x0, 0x01, 0x04}
-		match, err := bolt.ValidateHandshake(buf[:n], hardcodedVersion)
+		// Make sure we try to use the version we're using the best
+		// version based on the backend server
+		serverVersion := b.Version().Bytes()
+		clientVersion, err := bolt.ValidateHandshake(buf[:n], serverVersion)
 		if err != nil {
 			log.Fatal(err)
 		}
-		_, err = conn.Write(match)
+		_, err = conn.Write(clientVersion)
 		if err != nil {
 			log.Fatal(err)
 		}
 
 		// regular bolt
-		handleBoltConn(bolt.NewDirectConn(conn), b)
+		handleBoltConn(bolt.NewDirectConn(conn), clientVersion, b)
 
 	} else if bytes.Equal(buf[:4], []byte{0x47, 0x45, 0x54, 0x20}) {
 		// Second case, we have an HTTP connection that might just
@@ -167,23 +167,21 @@ func handleClient(conn net.Conn, b *backend.Backend) {
 			log.Fatal(err)
 		}
 
-		// Browser uses an older 4.1 driver?! For now since we don't
-		// negotiate client & server side bolt versions, let's use
-		// Bolt v4.1
-		hardcodedVersion := []byte{0x0, 0x0, 0x1, 0x4}
-		match, err := bolt.ValidateHandshake(handshake, hardcodedVersion)
+		// negotiate client & server side bolt versions
+		serverVersion := b.Version().Bytes()
+		clientVersion, err := bolt.ValidateHandshake(handshake, serverVersion)
 		if err != nil {
 			log.Fatal(err)
 		}
 
 		// Complete Bolt handshake via WebSocket frame
-		frame := ws.NewBinaryFrame(match)
+		frame := ws.NewBinaryFrame(clientVersion)
 		if err = ws.WriteFrame(conn, frame); err != nil {
 			log.Fatal(err)
 		}
 
 		// Let there be Bolt-via-WebSockets!
-		handleBoltConn(bolt.NewWsConn(conn), b)
+		handleBoltConn(bolt.NewWsConn(conn), clientVersion, b)
 	} else {
 		// not bolt, not http...something else?
 		log.Printf("client %s is speaking gibberish: %#v\n",
@@ -194,11 +192,11 @@ func handleClient(conn net.Conn, b *backend.Backend) {
 // Primary Transaction client-side event handler, collecting Messages from
 // the Bolt client and finding ways to switch them to the proper backend.
 //
-// The event loop
+// The event loop...
 //
 // TOOD: this logic should be split out between the authentication and the
 // event loop. For now, this does both.
-func handleBoltConn(client bolt.BoltConn, b *backend.Backend) {
+func handleBoltConn(client bolt.BoltConn, clientVersion []byte, b *backend.Backend) {
 	// Intercept HELLO message for authentication and hold onto it
 	// for use in backend authentication
 	var hello *bolt.Message
@@ -452,14 +450,14 @@ func main() {
 	}()
 
 	// ---------- BACK END
-	log.Println("Starting bolt-proxy back-end...")
+	log.Println("Starting bolt-proxy backend...")
 	backend, err := backend.NewBackend(username, password, proxyTo)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	// ---------- FRONT END
-	log.Println("Starting bolt-proxy front-end...")
+	log.Println("Starting bolt-proxy frontend...")
 	var listener net.Listener
 	if certFile == "" || keyFile == "" {
 		// non-tls

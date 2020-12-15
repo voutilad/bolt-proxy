@@ -31,7 +31,19 @@ func ValidateMagic(magic []byte) (bool, error) {
 // Inspect client and server communication for valid Bolt handshake,
 // returning the handshake value's bytes.
 //
-// If the handshake is input bytes or handshake is invalide, returns
+// In order to pick the version, we use a simple formula of:
+//
+//   min( max(client versions), max(server versions) )
+//
+// So if client_versions=[4.0, 3.5, 3.4]
+// and server_versions=[4.2, 4.1, 4.0, 3.5]
+// then min(max(4.0, 3.5, 3.4), max([4.2, 4.1, 4.0, 3.5])) ==>
+//   min(4.0, 4.2) ==> 4.0!
+//
+// Though, in reality, right now we already have the max(serverVersion)
+// as the server []byte argument.
+//
+// If the handshake is input bytes or handshake is invalid, returns
 // an error and an empty byte array.
 func ValidateHandshake(client, server []byte) ([]byte, error) {
 	if len(server) != 4 {
@@ -42,15 +54,42 @@ func ValidateHandshake(client, server []byte) ([]byte, error) {
 		return nil, errors.New("client handshake wrong size")
 	}
 
+	chosen := make([]byte, 4)
+
 	log.Printf("HANDSHAKE: client=%#v, server=%#v\n", client, server)
 
+	// find max(clientVersion)
+	clientVersion := []byte{0x0, 0x0, 0x0, 0x0}
 	for i := 0; i < 4; i++ {
 		part := client[i*4 : i*4+4]
-		if bytes.Equal(server, part) {
-			return part, nil
+		if part[3] > clientVersion[3] ||
+			(part[3] == clientVersion[3] && part[2] > clientVersion[2]) {
+			clientVersion = part
 		}
+		// XXX: we assume nobody cares about patch level or lower
 	}
-	return []byte{}, errors.New("couldn't find handshake match!")
+
+	log.Printf("HANDSHAKE: clientVersion=%#v\n", clientVersion)
+
+	// our hacky min() logic
+	if clientVersion[3] > server[3] {
+		// differing major number, client newer
+		copy(chosen, server)
+	} else if clientVersion[3] == server[3] {
+		// check minor numbers
+		if clientVersion[2] > server[2] {
+			copy(chosen, server)
+		} else {
+			copy(chosen, clientVersion)
+		}
+	} else {
+		// client is older
+		copy(chosen, clientVersion)
+	}
+
+	log.Printf("HANDSHAKE: chosen=%#v\n", chosen)
+
+	return chosen, nil
 }
 
 // Try to find and validate the Mode for some given bytes, returning

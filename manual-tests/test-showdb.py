@@ -12,6 +12,6 @@ def do(query):
 
 
 with neo4j.GraphDatabase.driver("bolt://localhost:8888", auth=("neo4j", "password")) as driver:
-    with driver.session(database="neo4j") as s:
+    with driver.session(database="system") as s:
         s.read_transaction(do("SHOW DATABASES"))
 

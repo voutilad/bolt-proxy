@@ -11,21 +11,17 @@ import (
 	"github.com/voutilad/bolt-proxy/bolt"
 )
 
-// set max to v4.1 for now
-var handshake = []byte{
-	0x60, 0x60, 0xb0, 0x17,
-	0x00, 0x00, 0x01, 0x04,
-	0x00, 0x00, 0x00, 0x04,
-	0x00, 0x00, 0x00, 0x03,
-	0x00, 0x00, 0x00, 0x02}
+var magic = []byte{0x60, 0x60, 0xb0, 0x17}
 
 // Use the provided []byte as a Hello message to try authenticating with the
-// provided address. If useTls, dial the address with the TLS dialer routine.
+// provided address, forcing the use of the given version []byte.
+//
+// If useTls, dial the address with the TLS dialer routine.
 //
 // On success, return a net.Conn that's pass the bolt handshake and has been
 // authenticated and is ready for transactions. Otherwise, return nil and the
 // error.
-func authClient(hello []byte, network, address string, useTls bool) (net.Conn, error) {
+func authClient(hello, version []byte, network, address string, useTls bool) (net.Conn, error) {
 	var conn net.Conn
 	var err error
 
@@ -42,6 +38,11 @@ func authClient(hello []byte, network, address string, useTls bool) (net.Conn, e
 	}
 
 	// Bolt handshake (bolt magic + version list)
+	handshake := append(magic, version...)
+	handshake = append(handshake, []byte{
+		0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00}...)
 	_, err = conn.Write(handshake)
 	if err != nil {
 		log.Println("couldn't send handshake to auth server", address)

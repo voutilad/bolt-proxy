@@ -1,6 +1,7 @@
 package bolt
 
 import (
+	"bytes"
 	"testing"
 )
 
@@ -64,5 +65,58 @@ func TestParsingFailure(t *testing.T) {
 	}
 	if msg != "The client is unauthorized due to authentication failure." {
 		t.Fatal("unexpected message:", val)
+	}
+}
+
+func TestValidateHandshake(t *testing.T) {
+	v42s := []byte{0x0, 0x0, 0x2, 0x4}
+	v41s := []byte{0x0, 0x0, 0x1, 0x4}
+	v40s := []byte{0x0, 0x0, 0x0, 0x4}
+	v35s := []byte{0x0, 0x0, 0x5, 0x3}
+
+	// Client handshakes
+	v42c := []byte{
+		0x0, 0x0, 0x2, 0x04,
+		0x0, 0x0, 0x1, 0x04,
+		0x0, 0x0, 0x0, 0x4,
+		0x0, 0x0, 0x5, 0x3,
+	}
+	v41c := []byte{
+		0x0, 0x0, 0x1, 0x04,
+		0x0, 0x0, 0x0, 0x04,
+		0x0, 0x0, 0x5, 0x3,
+		0x0, 0x0, 0x0, 0x3,
+	}
+	v40c := []byte{
+		0x0, 0x0, 0x0, 0x04,
+		0x0, 0x0, 0x5, 0x03,
+		0x0, 0x0, 0x0, 0x3,
+		0x0, 0x0, 0x0, 0x2,
+	}
+	v35c := []byte{
+		0x0, 0x0, 0x5, 0x03,
+		0x0, 0x0, 0x0, 0x03,
+		0x0, 0x0, 0x0, 0x2,
+		0x0, 0x0, 0x0, 0x1,
+	}
+
+	// tests: [client, server, expected]
+	tests := []map[string][]byte{
+		{"client": v42c, "server": v42s, "expected": v42s},
+		{"client": v41c, "server": v42s, "expected": v41s},
+		{"client": v40c, "server": v42s, "expected": v40s},
+		{"client": v42c, "server": v40s, "expected": v40s},
+		{"client": v35c, "server": v42s, "expected": v35s},
+		{"client": v41c, "server": v40s, "expected": v40s},
+	}
+
+	for _, test := range tests {
+		result, err := ValidateHandshake(test["client"], test["server"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(test["expected"], result) {
+			t.Fatalf("expected %#v, got %#v (test: %#v)\n", test["expected"], result, test)
+		}
 	}
 }

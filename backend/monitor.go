@@ -21,9 +21,28 @@ import (
 // Before it puts a new pointer in the channel, it tries to empty it, which
 // hopefully reduces the chance of receiving stale entries.
 type Monitor struct {
-	C      <-chan *RoutingTable
-	halt   chan bool
-	driver *neo4j.Driver
+	C       <-chan *RoutingTable
+	halt    chan bool
+	driver  *neo4j.Driver
+	Version Version
+}
+
+type Version struct {
+	Major, Minor, Patch uint8
+}
+
+func (v Version) String() string {
+	return fmt.Sprintf("{ major: %d, minor: %d, patch: %d }",
+		v.Major,
+		v.Minor,
+		v.Patch)
+}
+
+func (v Version) Bytes() []byte {
+	return []byte{
+		0x00, 0x00,
+		v.Minor, v.Major,
+	}
 }
 
 // Our default Driver configuration provides:
@@ -50,6 +69,51 @@ func newConfigurer(hosts []string) func(c *neo4j.Config) {
 	}
 }
 
+const VERSION_QUERY = `
+CALL dbms.components() YIELD name, versions
+WITH name, versions WHERE name = "Neo4j Kernel"
+RETURN [x IN split(head(versions), ".") | toInteger(x)] AS version
+`
+
+// Get the backend Neo4j version based on the output of the VERSION_QUERY,
+// which should provide an array of int64s corresponding to the Version.
+// Return the Version on success, otherwise return an empty Version and
+// and error.
+func getVersion(driver *neo4j.Driver) (Version, error) {
+	version := Version{}
+	session := (*driver).NewSession(neo4j.SessionConfig{})
+	defer session.Close()
+
+	result, err := session.Run(VERSION_QUERY, nil)
+	if err != nil {
+		return version, nil
+	}
+
+	record, err := result.Single()
+	if err != nil {
+		return version, nil
+	}
+
+	val, found := record.Get("version")
+	if !found {
+		return version, errors.New("couldn't find version in query results")
+	}
+	data, ok := val.([]interface{})
+	if !ok {
+		return version, errors.New("version isn't an array")
+	}
+	if len(data) != 3 {
+		return version, errors.New("version array doesn't contain 3 values")
+	}
+
+	// yolo for now
+	version.Major = uint8(data[0].(int64))
+	version.Minor = uint8(data[1].(int64))
+	version.Patch = uint8(data[2].(int64))
+
+	return version, nil
+}
+
 // Construct and start a new routing table Monitor using the provided user,
 // password, and uri as arguments to the underlying neo4j.Driver. Returns a
 // pointer to the Monitor on success, or nil and an error on failure.
@@ -67,6 +131,12 @@ func NewMonitor(user, password, uri string, hosts ...string) (*Monitor, error) {
 		return nil, err
 	}
 
+	version, err := getVersion(&driver)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("found neo4j version %v\n", version)
+
 	// TODO: check if in SINGLE, CORE, or READ_REPLICA mode
 	// We can run `CALL dbms.listConfig('dbms.mode') YIELD value` and
 	// check if we're clustered or not. Ideally, if not clustered, we
@@ -80,7 +150,7 @@ func NewMonitor(user, password, uri string, hosts ...string) (*Monitor, error) {
 	}
 	c <- rt
 
-	monitor := Monitor{c, h, &driver}
+	monitor := Monitor{c, h, &driver, version}
 	go func() {
 		// preset the initial ticker to use the first ttl measurement
 		ticker := time.NewTicker(rt.Ttl)

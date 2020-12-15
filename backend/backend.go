@@ -38,6 +38,10 @@ func NewBackend(username, password string, uri string, hosts ...string) (*Backen
 	}, nil
 }
 
+func (b *Backend) Version() Version {
+	return b.monitor.Version
+}
+
 func (b *Backend) RoutingTable() *RoutingTable {
 	if b.routingTable == nil {
 		panic("attempting to use uninitialized BackendClient")
@@ -90,7 +94,8 @@ func (b *Backend) Authenticate(hello *bolt.Message) (map[string]bolt.BoltConn, e
 	defaultWriter := writers[0]
 
 	log.Printf("trying to auth %s to host %s\n", principal, defaultWriter)
-	conn, err := authClient(hello.Data, "tcp", defaultWriter, b.tls)
+	conn, err := authClient(hello.Data, b.Version().Bytes(),
+		"tcp", defaultWriter, b.tls)
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +118,7 @@ func (b *Backend) Authenticate(hello *bolt.Message) (map[string]bolt.BoltConn, e
 			wg.Add(1)
 			go func(h string) {
 				defer wg.Done()
-				conn, err := authClient(hello.Data, "tcp", h, b.tls)
+				conn, err := authClient(hello.Data, b.Version().Bytes(), "tcp", h, b.tls)
 				if err != nil {
 					log.Printf("failed to auth %s to %s!?\n", principal, h)
 					return
