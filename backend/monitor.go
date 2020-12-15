@@ -67,6 +67,12 @@ func NewMonitor(user, password, uri string, hosts ...string) (*Monitor, error) {
 		return nil, err
 	}
 
+	// TODO: check if in SINGLE, CORE, or READ_REPLICA mode
+	// We can run `CALL dbms.listConfig('dbms.mode') YIELD value` and
+	// check if we're clustered or not. Ideally, if not clustered, we
+	// simplify the monitor considerably to just health checks and no
+	// routing table.
+
 	// Get the first routing table and ttl details
 	rt, err := getNewRoutingTable(&driver)
 	if err != nil {
@@ -121,6 +127,8 @@ func (m *Monitor) Stop() {
 }
 
 // local data structure for passing the raw routing table details
+// TODO: ttl could be pulled direct via a check of dbms.routing_ttl
+// since it's not a dynamic config value as of v4.2
 type table struct {
 	db      string
 	ttl     time.Duration
@@ -140,11 +148,9 @@ UNWIND server["addresses"] AS address
 RETURN name, ttl, server["role"] AS role, address
 `
 
-// Dump the list of databases with the first result being the default db
-const SHOW_DATABASES = `
-SHOW DATABASES YIELD name, default, currentStatus WHERE currentStatus = 'online'
-RETURN name, default, currentStatus ORDER BY default DESC
-`
+// Dump the list of databases. We need to keep this simple to support v4.0,
+// v4.1, and v4.2 since this has been a moving target in how it works
+const SHOW_DATABASES = "SHOW DATABASES"
 
 // Use SHOW DATABASES to dump the current list of databases with the first
 // database name being the default (based on the query logic)
@@ -163,8 +169,9 @@ func queryDbNames(driver *neo4j.Driver) ([]string, error) {
 		return nil, err
 	}
 
-	names := make([]string, len(rows))
-	for i, row := range rows {
+	// create a basic set structure
+	nameSet := make(map[string]bool)
+	for _, row := range rows {
 		val, found := row.Get("name")
 		if !found {
 			return nil, errors.New("couldn't find name field in result")
@@ -173,9 +180,25 @@ func queryDbNames(driver *neo4j.Driver) ([]string, error) {
 		if !ok {
 			panic("name isn't a string")
 		}
-		names[i] = name
+
+		val, found = row.Get("currentStatus")
+		if !found {
+			return nil, errors.New("couldn't find currentStatus field in result")
+		}
+		status, ok := val.(string)
+		if !ok {
+			panic("currentStatus isn't a string")
+		}
+
+		if status == "online" {
+			nameSet[name] = true
+		}
 	}
 
+	names := make([]string, 0, len(nameSet))
+	for key := range nameSet {
+		names = append(names, key)
+	}
 	return names, nil
 }
 
