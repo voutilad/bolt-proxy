@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"log"
 )
 
 type Message struct {
@@ -64,36 +63,6 @@ func TypeFromByte(b byte) Type {
 		return RollbackMsg
 	default:
 		return UnknownMsg
-	}
-}
-
-const MAX_BYTES int = 32
-
-// Crude logging routine for helping debug bolt Messages. Tries not to clutter
-// output too much due to large messages while trying to deliniate who logged
-// the message.
-func LogMessage(who string, msg *Message) {
-	end := MAX_BYTES
-	suffix := fmt.Sprintf("...+%d bytes", len(msg.Data))
-	if len(msg.Data) < MAX_BYTES {
-		end = len(msg.Data)
-		suffix = ""
-	}
-
-	switch msg.T {
-	case HelloMsg:
-		// make sure we don't print the secrets in a Hello!
-		log.Printf("[%s] <%s>: %#v\n\n", who, msg.T, msg.Data[:4])
-	case BeginMsg, FailureMsg:
-		log.Printf("[%s] <%s>: %#v\n%s\n", who, msg.T, msg.Data[:end], msg.Data)
-	default:
-		log.Printf("[%s] <%s>: %#v%s\n", who, msg.T, msg.Data[:end], suffix)
-	}
-}
-
-func LogMessages(who string, messages []*Message) {
-	for _, msg := range messages {
-		LogMessage(who, msg)
 	}
 }
 

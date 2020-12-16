@@ -3,7 +3,6 @@ package bolt
 import (
 	"bytes"
 	"errors"
-	"log"
 )
 
 // Mode of a Bolt Transaction for determining cluster routing
@@ -56,8 +55,6 @@ func ValidateHandshake(client, server []byte) ([]byte, error) {
 
 	chosen := make([]byte, 4)
 
-	log.Printf("HANDSHAKE: client=%#v, server=%#v\n", client, server)
-
 	// find max(clientVersion)
 	clientVersion := []byte{0x0, 0x0, 0x0, 0x0}
 	for i := 0; i < 4; i++ {
@@ -68,8 +65,6 @@ func ValidateHandshake(client, server []byte) ([]byte, error) {
 		}
 		// XXX: we assume nobody cares about patch level or lower
 	}
-
-	log.Printf("HANDSHAKE: clientVersion=%#v\n", clientVersion)
 
 	// our hacky min() logic
 	if clientVersion[3] > server[3] {
@@ -87,8 +82,6 @@ func ValidateHandshake(client, server []byte) ([]byte, error) {
 		copy(chosen, clientVersion)
 	}
 
-	log.Printf("HANDSHAKE: chosen=%#v\n", chosen)
-
 	return chosen, nil
 }
 
@@ -99,7 +92,7 @@ func ValidateMode(buf []byte) (Mode, error) {
 	if IdentifyType(buf) == BeginMsg {
 		tinyMap, _, err := ParseTinyMap(buf[4:])
 		if err != nil {
-			log.Fatal(err)
+			panic(err)
 		}
 
 		value, found := tinyMap["mode"]

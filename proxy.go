@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -21,8 +22,40 @@ import (
 	"github.com/gobwas/ws"
 )
 
-// A basic idle timeout duration for now
-const MAX_IDLE_MINS int = 30
+const (
+	// A basic idle timeout duration for now
+	MAX_IDLE_MINS int = 30
+	// max bytes to display in logs in debug mode
+	MAX_BYTES int = 32
+)
+
+// Crude logging routine for helping debug bolt Messages. Tries not to clutter
+// output too much due to large messages while trying to deliniate who logged
+// the message.
+func logMessage(who string, msg *bolt.Message) {
+	end := MAX_BYTES
+	suffix := fmt.Sprintf("...+%d bytes", len(msg.Data))
+	if len(msg.Data) < MAX_BYTES {
+		end = len(msg.Data)
+		suffix = ""
+	}
+
+	switch msg.T {
+	case bolt.HelloMsg:
+		// make sure we don't print the secrets in a Hello!
+		log.Printf("[%s] <%s>: %#v\n\n", who, msg.T, msg.Data[:4])
+	case bolt.BeginMsg, bolt.FailureMsg:
+		log.Printf("[%s] <%s>: %#v\n%s\n", who, msg.T, msg.Data[:end], msg.Data)
+	default:
+		log.Printf("[%s] <%s>: %#v%s\n", who, msg.T, msg.Data[:end], suffix)
+	}
+}
+
+func logMessages(who string, messages []*bolt.Message) {
+	for _, msg := range messages {
+		logMessage(who, msg)
+	}
+}
 
 // Primary Transaction server-side event handler, collecting Messages from
 // the backend Bolt server and writing them to the given client.
@@ -43,12 +76,12 @@ func handleTx(client, server bolt.BoltConn, ack chan<- bool, halt <-chan bool) {
 		select {
 		case msg, ok := <-server.R():
 			if ok {
-				bolt.LogMessage("P<-S", msg)
+				logMessage("P<-S", msg)
 				err := client.WriteMessage(msg)
 				if err != nil {
 					panic(err)
 				}
-				bolt.LogMessage("C<-P", msg)
+				logMessage("C<-P", msg)
 
 				// if know the server side is saying goodbye,
 				// we abort the loop
@@ -227,7 +260,7 @@ func handleBoltConn(client bolt.BoltConn, clientVersion []byte, b *backend.Backe
 		log.Println("timed out waiting for client to auth")
 		return
 	}
-	bolt.LogMessage("C->P", hello)
+	logMessage("C->P", hello)
 
 	if hello.T != bolt.HelloMsg {
 		log.Println("expected HelloMsg, got:", hello.T)
@@ -253,7 +286,7 @@ func handleBoltConn(client bolt.BoltConn, clientVersion []byte, b *backend.Backe
 			0x8d, 0x63, 0x6f, 0x6e, 0x6e, 0x65, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x5f, 0x69, 0x64,
 			0x86, 0x62, 0x6f, 0x6c, 0x74, 0x2d, 0x34,
 			0x00, 0x00}}
-	bolt.LogMessage("P->C", &success)
+	logMessage("P->C", &success)
 	err = client.WriteMessage(&success)
 	if err != nil {
 		log.Fatal(err)
@@ -272,7 +305,7 @@ func handleBoltConn(client bolt.BoltConn, clientVersion []byte, b *backend.Backe
 		case m, ok := <-client.R():
 			if ok {
 				msg = m
-				bolt.LogMessage("C->P", msg)
+				logMessage("C->P", msg)
 			} else {
 				log.Println("potential client hangup")
 				select {
@@ -392,7 +425,7 @@ func handleBoltConn(client bolt.BoltConn, clientVersion []byte, b *backend.Backe
 				// TODO: figure out best way to handle failed writes
 				panic(err)
 			}
-			bolt.LogMessage("P->S", msg)
+			logMessage("P->S", msg)
 		} else {
 			// we have no connection since there's no tx...
 			// handle only specific, simple messages

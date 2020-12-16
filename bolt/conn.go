@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	//	"log"
 
 	"github.com/gobwas/ws"
 )
@@ -68,11 +68,11 @@ func NewDirectConn(c io.ReadWriteCloser) DirectConn {
 			message, err := dc.readMessage()
 			if err != nil {
 				if err == io.EOF {
-					log.Println("direct bolt connection hung-up")
+					// log.Println("direct bolt connection hung-up")
 					close(msgchan)
 					return
 				}
-				log.Printf("direct bolt connection disconnect: %s\n", err)
+				// log.Printf("direct bolt connection disconnect: %s\n", err)
 				return
 			}
 			msgchan <- message
@@ -187,11 +187,11 @@ func NewWsConn(c io.ReadWriteCloser) WsConn {
 			messages, err := ws.readMessages()
 			if err != nil {
 				if err == io.EOF {
-					log.Println("bolt ws connection hung-up")
+					// log.Println("bolt ws connection hung-up")
 					close(msgchan)
 					return
 				}
-				log.Printf("ws bolt connection disconnect: %s\n", err)
+				// log.Printf("ws bolt connection disconnect: %s\n", err)
 				return
 			}
 			for _, message := range messages {
