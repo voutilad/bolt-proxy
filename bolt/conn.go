@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	//	"log"
+	"net"
 
 	"github.com/gobwas/ws"
 )
@@ -80,6 +80,15 @@ func NewDirectConn(c io.ReadWriteCloser) DirectConn {
 	}()
 
 	return dc
+}
+
+func (c DirectConn) String() string {
+	switch c.conn.(type) {
+	case net.Conn:
+		return fmt.Sprintf("Direct[%s]", c.conn.(net.Conn).RemoteAddr())
+	default:
+		return fmt.Sprintf("Direct[%s]", &c.conn)
+	}
 }
 
 func (c DirectConn) R() <-chan *Message {
@@ -208,6 +217,15 @@ func NewWsConn(c io.ReadWriteCloser) WsConn {
 
 func (c WsConn) R() <-chan *Message {
 	return c.r
+}
+
+func (c WsConn) String() string {
+	switch c.conn.(type) {
+	case net.Conn:
+		return fmt.Sprintf("WebSocket[%s]", c.conn.(net.Conn).RemoteAddr())
+	default:
+		return fmt.Sprintf("WebSocket[%s]", &c.conn)
+	}
 }
 
 // Read 0 or many Bolt Messages from a WebSocket frame since, apparently,

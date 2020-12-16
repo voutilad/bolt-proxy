@@ -13,11 +13,12 @@ type Backend struct {
 	monitor      *Monitor
 	routingTable *RoutingTable
 	tls          bool
+	log          *log.Logger
 	// map of principals -> hosts -> connections
 	connectionPool map[string]map[string]bolt.BoltConn
 }
 
-func NewBackend(username, password string, uri string, hosts ...string) (*Backend, error) {
+func NewBackend(logger *log.Logger, username, password string, uri string, hosts ...string) (*Backend, error) {
 	monitor, err := NewMonitor(username, password, uri, hosts...)
 	if err != nil {
 		return nil, err
@@ -35,6 +36,7 @@ func NewBackend(username, password string, uri string, hosts ...string) (*Backen
 		monitor:      monitor,
 		routingTable: routingTable,
 		tls:          tls,
+		log:          logger,
 	}, nil
 }
 
@@ -47,17 +49,17 @@ func (b *Backend) RoutingTable() *RoutingTable {
 		panic("attempting to use uninitialized BackendClient")
 	}
 
-	log.Println("checking routing table...")
+	b.log.Println("checking routing table...")
 	if b.routingTable.Expired() {
 		select {
 		case rt := <-b.monitor.C:
 			b.routingTable = rt
 		case <-time.After(60 * time.Second):
-			log.Fatal("timeout waiting for new routing table!")
+			b.log.Fatal("timeout waiting for new routing table!")
 		}
 	}
 
-	log.Println("using routing table")
+	b.log.Println("using routing table")
 	return b.routingTable
 }
 
@@ -75,14 +77,14 @@ func (b *Backend) Authenticate(hello *bolt.Message) (map[string]bolt.BoltConn, e
 	// TODO: clean up this api...push the dirt into Bolt package
 	msg, pos, err := bolt.ParseTinyMap(hello.Data[4:])
 	if err != nil {
-		log.Printf("XXX pos: %d, hello map: %#v\n", pos, msg)
+		b.log.Printf("XXX pos: %d, hello map: %#v\n", pos, msg)
 		panic(err)
 	}
 	principal, ok := msg["principal"].(string)
 	if !ok {
 		panic("principal in Hello message was not a string")
 	}
-	log.Println("found principal:", principal)
+	b.log.Println("found principal:", principal)
 
 	// refresh routing table
 	// TODO: this api seems backwards...push down into table?
@@ -93,7 +95,7 @@ func (b *Backend) Authenticate(hello *bolt.Message) (map[string]bolt.BoltConn, e
 	writers, _ := rt.WritersFor(rt.DefaultDb)
 	defaultWriter := writers[0]
 
-	log.Printf("trying to auth %s to host %s\n", principal, defaultWriter)
+	b.log.Printf("trying to auth %s to host %s\n", principal, defaultWriter)
 	conn, err := authClient(hello.Data, b.Version().Bytes(),
 		"tcp", defaultWriter, b.tls)
 	if err != nil {
@@ -120,10 +122,10 @@ func (b *Backend) Authenticate(hello *bolt.Message) (map[string]bolt.BoltConn, e
 				defer wg.Done()
 				conn, err := authClient(hello.Data, b.Version().Bytes(), "tcp", h, b.tls)
 				if err != nil {
-					log.Printf("failed to auth %s to %s!?\n", principal, h)
+					b.log.Printf("failed to auth %s to %s!?\n", principal, h)
 					return
 				}
-				log.Printf("auth'd %s to host %s\n", principal, h)
+				b.log.Printf("auth'd %s to host %s\n", principal, h)
 				c <- pair{bolt.NewDirectConn(conn), h}
 			}(host)
 		}
@@ -136,6 +138,6 @@ func (b *Backend) Authenticate(hello *bolt.Message) (map[string]bolt.BoltConn, e
 		conns[p.host] = p.conn
 	}
 
-	log.Printf("auth'd principal to %d hosts\n", len(conns))
+	b.log.Printf("auth'd principal to %d hosts\n", len(conns))
 	return conns, err
 }

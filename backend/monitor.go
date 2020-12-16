@@ -3,7 +3,6 @@ package backend
 import (
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -31,8 +30,20 @@ type Version struct {
 	Major, Minor, Patch uint8
 }
 
+func ParseVersion(buf []byte) (Version, error) {
+	if len(buf) < 4 {
+		return Version{}, errors.New("buffer too short (< 4)")
+	}
+
+	version := Version{}
+	version.Major = uint8(buf[3])
+	version.Minor = uint8(buf[2])
+	version.Patch = uint8(buf[1])
+	return version, nil
+}
+
 func (v Version) String() string {
-	return fmt.Sprintf("{ major: %d, minor: %d, patch: %d }",
+	return fmt.Sprintf("Bolt{major: %d, minor: %d, patch: %d}",
 		v.Major,
 		v.Minor,
 		v.Patch)
@@ -133,9 +144,9 @@ func NewMonitor(user, password, uri string, hosts ...string) (*Monitor, error) {
 
 	version, err := getVersion(&driver)
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
-	log.Printf("found neo4j version %v\n", version)
+	// log.Printf("found neo4j version %v\n", version)
 
 	// TODO: check if in SINGLE, CORE, or READ_REPLICA mode
 	// We can run `CALL dbms.listConfig('dbms.mode') YIELD value` and
@@ -146,7 +157,7 @@ func NewMonitor(user, password, uri string, hosts ...string) (*Monitor, error) {
 	// Get the first routing table and ttl details
 	rt, err := getNewRoutingTable(&driver)
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 	c <- rt
 
@@ -159,7 +170,7 @@ func NewMonitor(user, password, uri string, hosts ...string) (*Monitor, error) {
 			case <-ticker.C:
 				rt, err := getNewRoutingTable(monitor.driver)
 				if err != nil {
-					log.Fatal(err)
+					panic(err)
 				}
 				ticker.Reset(rt.Ttl)
 
@@ -179,9 +190,10 @@ func NewMonitor(user, password, uri string, hosts ...string) (*Monitor, error) {
 				}
 			case <-h:
 				ticker.Stop()
-				log.Println("monitor stopped")
-			case <-time.After(5 * rt.Ttl):
-				log.Fatalf("monitor timeout reached of 5 x %v\n", rt.Ttl)
+				// log.Println("monitor stopped")
+			case <-time.After(10 * rt.Ttl):
+				msg := fmt.Sprintf("monitor timeout of 10*%v reached\n", rt.Ttl)
+				panic(msg)
 			}
 		}
 	}()
@@ -381,14 +393,14 @@ func routingTableTx(tx neo4j.Transaction, names []string) (interface{}, error) {
 func getNewRoutingTable(driver *neo4j.Driver) (*RoutingTable, error) {
 	names, err := queryDbNames(driver)
 	if err != nil {
-		log.Printf("error getting database names: %v\n", err)
-		return nil, err
+		msg := fmt.Sprintf("error getting database names: %v\n", err)
+		return nil, errors.New(msg)
 	}
 
 	tableMap, err := queryRoutingTable(driver, names)
 	if err != nil {
-		log.Printf("error getting routing table: %v\n", err)
-		return nil, err
+		msg := fmt.Sprintf("error getting routing table: %v\n", err)
+		return nil, errors.New(msg)
 	}
 
 	// build the new routing table instance
@@ -422,8 +434,8 @@ func getNewRoutingTable(driver *neo4j.Driver) (*RoutingTable, error) {
 		}
 	}
 
-	log.Printf("updated routing table: %s\n", &rt)
-	log.Printf("known hosts look like: %v\n", rt.Hosts)
+	// log.Printf("updated routing table: %s\n", &rt)
+	// log.Printf("known hosts look like: %v\n", rt.Hosts)
 
 	return &rt, nil
 }

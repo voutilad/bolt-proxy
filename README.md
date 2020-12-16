@@ -105,6 +105,8 @@ Usage of ./bolt-proxy:
         host:port to bind to (default "localhost:8888")
   -cert string
         x509 certificate
+  -debug
+        enable debug logging
   -key string
         x509 private key
   -pass string
@@ -124,12 +126,28 @@ configuration easier in the "cloud":
 - `BOLT_PROXY_PASSWORD` -- password for the backend neo4j user for use
   by the monitor
 - `BOLT_PROXY_CERT` -- path to the x509 certificate (.pem) file
-- `BOLE_PROXY_KEY` -- path to the x509 private key file
+- `BOLT_PROXY_KEY` -- path to the x509 private key file
+- `BOLT_PROXY_DEBUG` -- set to any value to enable debug mode/logging
 
 ### Lifecycle
 When you start the proxy, it'll immediately try to connect to the
-target backend using the provided bolt uri, username, and password. It
-will then begin monitoring the routing table.
+target backend using the provided bolt uri, username, and
+password. The server version is extracted and it will then begin
+monitoring the routing table.
+
+When clients connect, the following occurs:
+
+1. The proxy determines the connection type (direct vs. websocket)
+2. The bolt handshake occurs, negotiating a version the client and
+   server can both speak.
+3. The proxy brokers authentication with one of the backend servers.
+4. If auth succeeds, the proxy then authenticates the client with all
+   other servers in the cluster.
+5. The main client event loop kicks in, dealing with mapping bolt
+   messages from the client to the appropriate backend server based on
+   the target database and transaction type.
+6. If all parties enjoy themselves, they say goodbye and everyone
+   thinks fondly of their experience.
 
 ### Connecting
 You then tell your client application (e.g. cypher-shell, Browser) to
@@ -169,6 +187,12 @@ A bad request takes 2 forms and each has a different result:
    connection being closed immediately.
 2. A request to `/health` that's not a valid HTTP request will result
    in an `HTTP/1.1 400 Bad Request` response.
+
+### Logging
+Some very verbose logging is available behind the `-debug` flag or the
+`BOLT_PROXY_DEBUG` environment variable. It will log most Bolt
+chatter, truncating messages, and will provide details on the state
+changes of the event loops. Enjoy paying your log vendor!
 
 # License
 Provided under MIT. See [LICENSE](./LICENSE).

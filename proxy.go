@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"net"
 	"os"
@@ -29,6 +30,12 @@ const (
 	MAX_BYTES int = 32
 )
 
+var (
+	debug *log.Logger
+	info  *log.Logger
+	warn  *log.Logger
+)
+
 // Crude logging routine for helping debug bolt Messages. Tries not to clutter
 // output too much due to large messages while trying to deliniate who logged
 // the message.
@@ -43,11 +50,11 @@ func logMessage(who string, msg *bolt.Message) {
 	switch msg.T {
 	case bolt.HelloMsg:
 		// make sure we don't print the secrets in a Hello!
-		log.Printf("[%s] <%s>: %#v\n\n", who, msg.T, msg.Data[:4])
+		debug.Printf("[%s] <%s>: %#v\n\n", who, msg.T, msg.Data[:4])
 	case bolt.BeginMsg, bolt.FailureMsg:
-		log.Printf("[%s] <%s>: %#v\n%s\n", who, msg.T, msg.Data[:end], msg.Data)
+		debug.Printf("[%s] <%s>: %#v\n%s\n", who, msg.T, msg.Data[:end], msg.Data)
 	default:
-		log.Printf("[%s] <%s>: %#v%s\n", who, msg.T, msg.Data[:end], suffix)
+		debug.Printf("[%s] <%s>: %#v%s\n", who, msg.T, msg.Data[:end], suffix)
 	}
 }
 
@@ -89,7 +96,7 @@ func handleTx(client, server bolt.BoltConn, ack chan<- bool, halt <-chan bool) {
 					finished = true
 				}
 			} else {
-				log.Println("potential server hangup")
+				debug.Println("potential server hangup")
 				finished = true
 			}
 
@@ -97,16 +104,16 @@ func handleTx(client, server bolt.BoltConn, ack chan<- bool, halt <-chan bool) {
 			finished = true
 
 		case <-time.After(time.Duration(MAX_IDLE_MINS) * time.Minute):
-			log.Println("timeout reading server!")
+			warn.Println("timeout reading server!")
 			finished = true
 		}
 	}
 
 	select {
 	case ack <- true:
-		log.Println("tx handler stop ACK sent")
+		debug.Println("tx handler stop ACK sent")
 	default:
-		log.Println("couldn't put value in ack channel?!")
+		warn.Println("couldn't put value in ack channel?!")
 	}
 }
 
@@ -117,7 +124,7 @@ func handleTx(client, server bolt.BoltConn, ack chan<- bool, halt <-chan bool) {
 // a client handler
 func handleClient(conn net.Conn, b *backend.Backend) {
 	defer func() {
-		log.Printf("closing client connection from %s\n",
+		debug.Printf("closing client connection from %s\n",
 			conn.RemoteAddr())
 		conn.Close()
 	}()
@@ -128,7 +135,7 @@ func handleClient(conn net.Conn, b *backend.Backend) {
 
 	n, err := conn.Read(buf[:4])
 	if err != nil || n != 4 {
-		log.Println("bad connection from", conn.RemoteAddr())
+		warn.Println("bad connection from", conn.RemoteAddr())
 		return
 	}
 
@@ -136,7 +143,7 @@ func handleClient(conn net.Conn, b *backend.Backend) {
 		// First case: we have a direct bolt client connection
 		n, err := conn.Read(buf[:20])
 		if err != nil {
-			log.Println("error peeking at connection from", conn.RemoteAddr())
+			warn.Println("error peeking at connection from", conn.RemoteAddr())
 			return
 		}
 
@@ -145,11 +152,11 @@ func handleClient(conn net.Conn, b *backend.Backend) {
 		serverVersion := b.Version().Bytes()
 		clientVersion, err := bolt.ValidateHandshake(buf[:n], serverVersion)
 		if err != nil {
-			log.Fatal(err)
+			warn.Fatal(err)
 		}
 		_, err = conn.Write(clientVersion)
 		if err != nil {
-			log.Fatal(err)
+			warn.Fatal(err)
 		}
 
 		// regular bolt
@@ -162,7 +169,7 @@ func handleClient(conn net.Conn, b *backend.Backend) {
 		// Read the rest of the request
 		n, err = conn.Read(buf[4:])
 		if err != nil {
-			log.Printf("failed reading rest of GET request: %s\n", err)
+			warn.Printf("failed reading rest of GET request: %s\n", err)
 			return
 		}
 
@@ -170,7 +177,7 @@ func handleClient(conn net.Conn, b *backend.Backend) {
 		if health.IsHealthCheck(buf[:n+4]) {
 			err = health.HandleHealthCheck(conn, buf[:n+4])
 			if err != nil {
-				log.Println(err)
+				warn.Println(err)
 			}
 			return
 		}
@@ -180,14 +187,14 @@ func handleClient(conn net.Conn, b *backend.Backend) {
 		iobuf := bytes.NewBuffer(buf[:n+4])
 		_, err := ws.Upgrade(iobuf)
 		if err != nil {
-			log.Printf("failed to upgrade websocket client %s: %s\n",
+			warn.Printf("failed to upgrade websocket client %s: %s\n",
 				conn.RemoteAddr(), err)
 			return
 		}
 		// Relay the upgrade response
 		_, err = io.Copy(conn, iobuf)
 		if err != nil {
-			log.Printf("failed to copy upgrade to client %s\n",
+			warn.Printf("failed to copy upgrade to client %s\n",
 				conn.RemoteAddr())
 			return
 		}
@@ -195,13 +202,13 @@ func handleClient(conn net.Conn, b *backend.Backend) {
 		// After upgrade, we should get a WebSocket message with header
 		header, err := ws.ReadHeader(conn)
 		if err != nil {
-			log.Printf("failed to read ws header from client %s: %s\n",
+			warn.Printf("failed to read ws header from client %s: %s\n",
 				conn.RemoteAddr(), err)
 			return
 		}
 		n, err := conn.Read(buf[:header.Length])
 		if err != nil {
-			log.Printf("failed to read payload from client %s\n",
+			warn.Printf("failed to read payload from client %s\n",
 				conn.RemoteAddr())
 			return
 		}
@@ -213,27 +220,27 @@ func handleClient(conn net.Conn, b *backend.Backend) {
 		magic, handshake := buf[:4], buf[4:20] // blaze it
 		valid, err := bolt.ValidateMagic(magic)
 		if !valid {
-			log.Fatal(err)
+			warn.Fatal(err)
 		}
 
 		// negotiate client & server side bolt versions
 		serverVersion := b.Version().Bytes()
 		clientVersion, err := bolt.ValidateHandshake(handshake, serverVersion)
 		if err != nil {
-			log.Fatal(err)
+			warn.Fatal(err)
 		}
 
 		// Complete Bolt handshake via WebSocket frame
 		frame := ws.NewBinaryFrame(clientVersion)
 		if err = ws.WriteFrame(conn, frame); err != nil {
-			log.Fatal(err)
+			warn.Fatal(err)
 		}
 
 		// Let there be Bolt-via-WebSockets!
 		handleBoltConn(bolt.NewWsConn(conn), clientVersion, b)
 	} else {
 		// not bolt, not http...something else?
-		log.Printf("client %s is speaking gibberish: %#v\n",
+		info.Printf("client %s is speaking gibberish: %#v\n",
 			conn.RemoteAddr(), buf[:4])
 	}
 }
@@ -252,27 +259,34 @@ func handleBoltConn(client bolt.BoltConn, clientVersion []byte, b *backend.Backe
 	select {
 	case msg, ok := <-client.R():
 		if !ok {
-			log.Println("failed to read expected Hello from client")
+			warn.Println("failed to read expected Hello from client")
 			return
 		}
 		hello = msg
 	case <-time.After(30 * time.Second):
-		log.Println("timed out waiting for client to auth")
+		warn.Println("timed out waiting for client to auth")
 		return
 	}
 	logMessage("C->P", hello)
 
 	if hello.T != bolt.HelloMsg {
-		log.Println("expected HelloMsg, got:", hello.T)
+		warn.Println("expected HelloMsg, got:", hello.T)
 		return
 	}
 
 	// get backend connection
-	log.Println("trying to authenticate with backend...")
 	pool, err := b.Authenticate(hello)
 	if err != nil {
-		log.Fatal(err)
+		warn.Fatal(err)
 	}
+
+	// TODO: this seems odd...move parser and version stuff to bolt pkg
+	v, _ := backend.ParseVersion(clientVersion)
+	info.Printf("authenticated client %s speaking %s to %d host(s)\n",
+		client, v, len(pool))
+	defer func() {
+		info.Printf("goodbye to client %s\n", client)
+	}()
 
 	// TODO: Replace hardcoded Success message with dynamic one
 	success := bolt.Message{
@@ -289,7 +303,7 @@ func handleBoltConn(client bolt.BoltConn, clientVersion []byte, b *backend.Backe
 	logMessage("P->C", &success)
 	err = client.WriteMessage(&success)
 	if err != nil {
-		log.Fatal(err)
+		warn.Fatal(err)
 	}
 
 	// Time to begin the client-side event loop!
@@ -307,17 +321,17 @@ func handleBoltConn(client bolt.BoltConn, clientVersion []byte, b *backend.Backe
 				msg = m
 				logMessage("C->P", msg)
 			} else {
-				log.Println("potential client hangup")
+				debug.Println("potential client hangup")
 				select {
 				case halt <- true:
-					log.Println("client hungup, asking tx to halt")
+					debug.Println("client hungup, asking tx to halt")
 				default:
-					log.Println("failed to send halt message to tx handler")
+					warn.Println("failed to send halt message to tx handler")
 				}
 				return
 			}
 		case <-time.After(time.Duration(MAX_IDLE_MINS) * time.Minute):
-			log.Println("client idle timeout")
+			warn.Println("client idle timeout")
 			return
 		}
 
@@ -370,11 +384,11 @@ func handleBoltConn(client bolt.BoltConn, clientVersion []byte, b *backend.Backe
 				hosts, err = rt.WritersFor(db)
 			}
 			if err != nil {
-				log.Printf("couldn't find host for '%s' in routing table", db)
+				warn.Printf("couldn't find host for '%s' in routing table", db)
 			}
 
 			if len(hosts) < 1 {
-				log.Println("empty hosts lists for database", db)
+				warn.Println("empty hosts lists for database", db)
 				// TODO: return FailureMsg???
 				return
 			}
@@ -385,12 +399,12 @@ func handleBoltConn(client bolt.BoltConn, clientVersion []byte, b *backend.Backe
 			if server != nil {
 				select {
 				case halt <- true:
-					log.Println("...asking current tx handler to halt")
+					debug.Println("...asking current tx handler to halt")
 					select {
 					case <-ack:
-						log.Println("tx handler ack'd stop")
+						debug.Println("tx handler ack'd stop")
 					case <-time.After(5 * time.Second):
-						log.Println("!!! timeout waiting for ack from tx handler")
+						warn.Println("!!! timeout waiting for ack from tx handler")
 					}
 				default:
 					// this shouldn't happen!
@@ -402,10 +416,10 @@ func handleBoltConn(client bolt.BoltConn, clientVersion []byte, b *backend.Backe
 			ok := false
 			server, ok = pool[host]
 			if !ok {
-				log.Println("no established connection for host", host)
+				warn.Println("no established connection for host", host)
 				return
 			}
-			log.Printf("grabbed conn for %s-access to db %s on host %s\n", mode, db, host)
+			debug.Printf("grabbed conn for %s-access to db %s on host %s\n", mode, db, host)
 
 			// TODO: refactor channel handling...probably have handleTx() return new ones
 			// instead of reusing the same ones. If we don't create new ones, there could
@@ -459,6 +473,7 @@ const (
 
 func main() {
 	var (
+		debugMode          bool
 		bindOn             string
 		proxyTo            string
 		username, password string
@@ -477,6 +492,7 @@ func main() {
 	if !found {
 		username = DEFAULT_USER
 	}
+	_, debugMode = os.LookupEnv("BOLT_PROXY_DEBUG")
 	password = os.Getenv("BOLT_PROXY_PASSWORD")
 	certFile = os.Getenv("BOLT_PROXY_CERT")
 	keyFile = os.Getenv("BOLT_PROXY_KEY")
@@ -488,52 +504,61 @@ func main() {
 	flag.StringVar(&password, "pass", password, "Neo4j password")
 	flag.StringVar(&certFile, "cert", certFile, "x509 certificate")
 	flag.StringVar(&keyFile, "key", keyFile, "x509 private key")
+	flag.BoolVar(&debugMode, "debug", debugMode, "enable debug logging")
 	flag.Parse()
 
 	// We log to stdout because our parents raised us right
-	log.SetOutput(os.Stdout)
+	info = log.New(os.Stdout, "INFO ", log.Ldate|log.Ltime|log.Lmsgprefix)
+	if debugMode {
+		debug = log.New(os.Stdout, "DEBUG ", log.Ldate|log.Ltime|log.Lmsgprefix)
+	} else {
+		debug = log.New(ioutil.Discard, "DEBUG ", 0)
+	}
+	warn = log.New(os.Stderr, "WARN ", log.Ldate|log.Ltime|log.Lmsgprefix)
 
 	// ---------- pprof debugger
 	go func() {
-		log.Println(http.ListenAndServe("localhost:6060", nil))
+		info.Println(http.ListenAndServe("localhost:6060", nil))
 	}()
 
 	// ---------- BACK END
-	log.Println("Starting bolt-proxy backend...")
-	backend, err := backend.NewBackend(username, password, proxyTo)
+	info.Println("starting bolt-proxy backend")
+	backend, err := backend.NewBackend(debug, username, password, proxyTo)
 	if err != nil {
-		log.Fatal(err)
+		warn.Fatal(err)
 	}
+	info.Println("connected to backend", proxyTo)
+	info.Printf("found backend version %s\n", backend.Version())
 
 	// ---------- FRONT END
-	log.Println("Starting bolt-proxy frontend...")
+	info.Println("starting bolt-proxy frontend")
 	var listener net.Listener
 	if certFile == "" || keyFile == "" {
 		// non-tls
 		listener, err = net.Listen("tcp", bindOn)
 		if err != nil {
-			log.Fatal(err)
+			warn.Fatal(err)
 		}
-		log.Printf("Listening on %s\n", bindOn)
+		info.Printf("listening on %s\n", bindOn)
 	} else {
 		// tls
 		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 		if err != nil {
-			log.Fatal(err)
+			warn.Fatal(err)
 		}
 		config := &tls.Config{Certificates: []tls.Certificate{cert}}
 		listener, err = tls.Listen("tcp", bindOn, config)
 		if err != nil {
-			log.Fatal(err)
+			warn.Fatal(err)
 		}
-		log.Printf("Listening for TLS connections on %s\n", bindOn)
+		info.Printf("listening for TLS connections on %s\n", bindOn)
 	}
 
 	// ---------- Event Loop
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			log.Printf("error: %v\n", err)
+			warn.Printf("error: %v\n", err)
 		} else {
 			go handleClient(conn, backend)
 		}

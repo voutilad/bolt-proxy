@@ -5,7 +5,7 @@ package backend
 import (
 	"crypto/tls"
 	"errors"
-	"log"
+	"fmt"
 	"net"
 
 	"github.com/voutilad/bolt-proxy/bolt"
@@ -45,9 +45,9 @@ func authClient(hello, version []byte, network, address string, useTls bool) (ne
 		0x00, 0x00, 0x00, 0x00}...)
 	_, err = conn.Write(handshake)
 	if err != nil {
-		log.Println("couldn't send handshake to auth server", address)
+		msg := fmt.Sprintf("couldn't send handshake to auth server %s: %s", address, err)
 		conn.Close()
-		return nil, err
+		return nil, errors.New(msg)
 	}
 
 	// Server should pick a version and provide as 4-byte array
@@ -55,24 +55,24 @@ func authClient(hello, version []byte, network, address string, useTls bool) (ne
 	buf := make([]byte, 256)
 	n, err := conn.Read(buf)
 	if err != nil || n != 4 {
-		log.Println("didn't get valid handshake response from auth server", address)
+		msg := fmt.Sprintf("didn't get valid handshake response from auth server %s: %s", address, err)
 		conn.Close()
-		return nil, err
+		return nil, errors.New(msg)
 	}
 
 	// Try performing the bolt auth the given hello message
 	_, err = conn.Write(hello)
 	if err != nil {
-		log.Println("failed to send hello buffer to server", address)
+		msg := fmt.Sprintf("failed to send hello buffer to server %s: %s", address, err)
 		conn.Close()
-		return nil, err
+		return nil, errors.New(msg)
 	}
 
 	n, err = conn.Read(buf)
 	if err != nil {
-		log.Println("failed to get auth response from auth server", address)
+		msg := fmt.Sprintf("failed to get auth response from auth server %s: %s", address, err)
 		conn.Close()
-		return nil, err
+		return nil, errors.New(msg)
 	}
 
 	msg := bolt.IdentifyType(buf)
@@ -92,9 +92,8 @@ func authClient(hello, version []byte, network, address string, useTls bool) (ne
 				return nil, errors.New(failmsg)
 			}
 		}
-		log.Printf("!!! auth failure, but could not parse response: %v\n", r)
 		conn.Close()
-		return nil, errors.New("unknown auth failure")
+		return nil, errors.New("could not parse auth server response")
 	} else if msg == bolt.SuccessMsg {
 		// The only happy outcome! Keep conn open.
 		return conn, nil
