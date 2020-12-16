@@ -87,7 +87,7 @@ func (c DirectConn) String() string {
 	case net.Conn:
 		return fmt.Sprintf("Direct[%s]", c.conn.(net.Conn).RemoteAddr())
 	default:
-		return fmt.Sprintf("Direct[%s]", &c.conn)
+		return fmt.Sprintf("Direct[%s]", c.conn)
 	}
 }
 
@@ -224,7 +224,7 @@ func (c WsConn) String() string {
 	case net.Conn:
 		return fmt.Sprintf("WebSocket[%s]", c.conn.(net.Conn).RemoteAddr())
 	default:
-		return fmt.Sprintf("WebSocket[%s]", &c.conn)
+		return fmt.Sprintf("WebSocket[%s]", c.conn)
 	}
 }
 
