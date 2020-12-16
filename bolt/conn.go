@@ -181,7 +181,7 @@ func NewWsConn(c io.ReadWriteCloser) WsConn {
 	msgchan := make(chan *Message)
 	ws := WsConn{
 		conn:     c,
-		buf:      make([]byte, 1024*32),
+		buf:      make([]byte, 1024*128),
 		r:        msgchan,
 		chunking: false,
 	}
