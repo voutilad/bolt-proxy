@@ -71,6 +71,8 @@ Now that I'm neck deep in this...here's where `bolt-proxy` stands:
 7. Picking leader vs. follower for write or read (respectively)
    transactions works.
 8. TLS support for client-side with default verification rules.
+9. Basic HTTP healthcheck available if sending HTTP GET with path of
+   /health to the listening port. (Will respond with 200 OK.)
 
 ## What doesn't (yet) work:
 1. No emulation of routing table, so if you use `neo4j://` schemes on
@@ -141,6 +143,32 @@ connection to the database :-P
 > NOTE: Keep in mind that the bolt-proxy will use the routing table
 > reported by the backend. If you have advertised addresses set, make
 > sure they are resolvable **by this proxy**.
+
+### Monitoring
+If using healthchecks in k8s or something else, a basic healthcheck is
+currently implemented. Sending a simple HTTP GET with a path of
+`/health` should respond with a 200 OK. For instance, if binding to
+`localhost:8888`:
+
+```
+kogelvis[bolt-proxy]$ curl -v http://localhost:8888/health
+*   Trying 127.0.0.1:8888...
+* Connected to localhost (127.0.0.1) port 8888 (#0)
+> GET /health HTTP/1.1
+> Host: localhost:8888
+> User-Agent: curl/7.73.0
+> Accept: */*
+>
+* Mark bundle as not supporting multiuse
+< HTTP/1.1 200 OK
+* Connection #0 to host localhost left intact
+```
+
+A bad request takes 2 forms and each has a different result:
+1. A request to a path other than `/health` will result in the
+   connection being closed immediately.
+2. A request to `/health` that's not a valid HTTP request will result
+   in an `HTTP/1.1 400 Bad Request` response.
 
 # License
 Provided under MIT. See [LICENSE](./LICENSE).

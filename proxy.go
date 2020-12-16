@@ -16,6 +16,7 @@ import (
 
 	"github.com/voutilad/bolt-proxy/backend"
 	"github.com/voutilad/bolt-proxy/bolt"
+	"github.com/voutilad/bolt-proxy/health"
 
 	"github.com/gobwas/ws"
 )
@@ -123,8 +124,23 @@ func handleClient(conn net.Conn, b *backend.Backend) {
 
 	} else if bytes.Equal(buf[:4], []byte{0x47, 0x45, 0x54, 0x20}) {
 		// Second case, we have an HTTP connection that might just
-		// be a WebSocket upgrade
-		n, _ = conn.Read(buf[4:])
+		// be a WebSocket upgrade OR a health check.
+
+		// Read the rest of the request
+		n, err = conn.Read(buf[4:])
+		if err != nil {
+			log.Printf("failed reading rest of GET request: %s\n", err)
+			return
+		}
+
+		// Health check, maybe? If so, handle and bail.
+		if health.IsHealthCheck(buf[:n+4]) {
+			err = health.HandleHealthCheck(conn, buf[:n+4])
+			if err != nil {
+				log.Println(err)
+			}
+			return
+		}
 
 		// Build something implementing the io.ReadWriter interface
 		// to pass to the upgrader routine
