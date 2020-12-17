@@ -55,6 +55,9 @@ func authClient(hello, version []byte, network, address string, useTls bool) (ne
 		return nil, errors.New(msg)
 	}
 
+	// XXX: SPLICE
+	fmt.Println("xxxx handh has been shook")
+
 	// Server should pick our version and provide as 4-byte array
 	buf := make([]byte, 256)
 	n, err := conn.Read(buf)
@@ -65,12 +68,18 @@ func authClient(hello, version []byte, network, address string, useTls bool) (ne
 	}
 
 	// Try performing the bolt auth the given hello message
-	_, err = conn.Write(hello)
+	n, err = conn.Write(hello)
 	if err != nil {
 		msg := fmt.Sprintf("failed to send hello buffer to server %s: %s", address, err)
 		conn.Close()
 		return nil, errors.New(msg)
 	}
+	if n != len(hello) {
+		panic("under write of hello msg")
+	}
+
+	// XXX: SPLICE
+	fmt.Println("xxxxx auth has been sent")
 
 	n, err = conn.Read(buf)
 	if err != nil {
@@ -79,7 +88,10 @@ func authClient(hello, version []byte, network, address string, useTls bool) (ne
 		return nil, errors.New(msg)
 	}
 
-	msg := bolt.IdentifyType(buf)
+	// XXX: SPLICE
+	fmt.Printf("xxxxxx auth response:\n%#v\n", buf[:n])
+
+	msg := bolt.IdentifyType(buf[:n])
 	if msg == bolt.FailureMsg {
 		// See if we can extract the error message
 		r, _, err := bolt.ParseTinyMap(buf[4:n])

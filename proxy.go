@@ -285,6 +285,7 @@ func handleBoltConn(client bolt.BoltConn, clientVersion []byte, b *backend.Backe
 	// XXX SPLICE
 	if b.Splicing {
 		// molest our hello message
+		info.Printf("HACK, hello before:\n%s\n", hello.Data[4:])
 		tinymap, _, err := bolt.ParseTinyMap(hello.Data[4:])
 		if err != nil {
 			panic(err)
@@ -293,22 +294,30 @@ func handleBoltConn(client bolt.BoltConn, clientVersion []byte, b *backend.Backe
 		if found {
 			info.Printf("HACK...found existing routing: %v\n", val)
 		}
+
 		tinymap["routing"] = map[string]interface{}{
 			"address": hackyHackHost,
 		}
+
+		// ???
+
 		info.Printf("HACK...hot-wired routing to be %v\n", tinymap["routing"])
 		raw, err := bolt.TinyMapToBytes(tinymap)
 		if err != nil {
 			panic(err)
 		}
 		data := make([]byte, len(raw)+6) // prefix + 00,00
-		copy(data, hello.Data[:4])
+		data[0] = 0x00
+		data[1] = uint8(len(raw) + 2)
+		data[2] = 0xb1
+		data[3] = 0x01
 		copy(data[4:], raw)
 		copy(data[len(raw)+4:], []byte{0x00, 0x00})
 
-		hey := bolt.Message{bolt.HelloMsg, data}
-		info.Printf("HACK...new hello message:\n%#v\n", hey)
+		hey := bolt.Message{T: bolt.HelloMsg, Data: data}
+		info.Printf("HACK...new hello message:\n%#v\n%s\n", hey.Data, hey.Data)
 
+		// /???
 		serverConn, err := b.TheHorror(hey.Data, clientVersion)
 		if err != nil {
 			panic(err)
