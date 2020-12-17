@@ -16,14 +16,27 @@ type Backend struct {
 	log          *log.Logger
 	// map of principals -> hosts -> connections
 	connectionPool map[string]map[string]bolt.BoltConn
+
+	// XXX: SPLICE
+	Host     string
+	Splicing bool
 }
 
-func NewBackend(logger *log.Logger, username, password string, uri string, hosts ...string) (*Backend, error) {
-	monitor, err := NewMonitor(username, password, uri, hosts...)
-	if err != nil {
-		return nil, err
+func NewBackend(logger *log.Logger, username, password string, uri string, splice bool, hosts ...string) (*Backend, error) {
+	var (
+		monitor      *Monitor
+		routingTable *RoutingTable
+		err          error
+	)
+
+	// XXX: SPLICE
+	if !splice {
+		monitor, err = NewMonitor(username, password, uri, hosts...)
+		if err != nil {
+			return nil, err
+		}
+		routingTable = <-monitor.C
 	}
-	routingTable := <-monitor.C
 
 	tls := false
 	switch strings.Split(uri, ":")[0] {
@@ -32,19 +45,34 @@ func NewBackend(logger *log.Logger, username, password string, uri string, hosts
 	default:
 	}
 
+	// XXX: SPLICE
+	host := strings.Split(uri, "//")[1]
+
 	return &Backend{
 		monitor:      monitor,
 		routingTable: routingTable,
 		tls:          tls,
 		log:          logger,
+		Splicing:     splice,
+		Host:         host,
 	}, nil
 }
 
 func (b *Backend) Version() Version {
+	// XXX: SPLICE
+	if b.Splicing {
+		return Version{Major: 4, Minor: 1, Patch: 0}
+	}
+
 	return b.monitor.Version
 }
 
 func (b *Backend) RoutingTable() *RoutingTable {
+	// XXX: SPLICE
+	if b.Splicing {
+		return nil
+	}
+
 	if b.routingTable == nil {
 		panic("attempting to use uninitialized BackendClient")
 	}

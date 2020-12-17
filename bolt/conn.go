@@ -24,6 +24,9 @@ type BoltConn interface {
 	R() <-chan *Message
 	WriteMessage(*Message) error
 	io.Closer
+
+	// XXX: SPLICE
+	RawConn() net.Conn
 }
 
 // Designed for operating direct (e.g. TCP/IP-only) Bolt connections
@@ -93,6 +96,16 @@ func (c DirectConn) String() string {
 
 func (c DirectConn) R() <-chan *Message {
 	return c.r
+}
+
+// XXX: SPLICE
+func (c DirectConn) RawConn() net.Conn {
+	switch c.conn.(type) {
+	case net.Conn:
+		return c.conn.(net.Conn)
+	default:
+		return nil
+	}
 }
 
 // Read a single bolt Message, returning a point to it, or an error
@@ -323,4 +336,14 @@ func (c WsConn) WriteMessage(m *Message) error {
 
 func (c WsConn) Close() error {
 	return c.conn.Close()
+}
+
+// XXX: SPLICE
+func (c WsConn) RawConn() net.Conn {
+	switch c.conn.(type) {
+	case net.Conn:
+		return c.conn.(net.Conn)
+	default:
+		return nil
+	}
 }

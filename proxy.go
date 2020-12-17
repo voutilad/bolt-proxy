@@ -27,7 +27,7 @@ const (
 	// A basic idle timeout duration for now
 	MAX_IDLE_MINS int = 30
 	// max bytes to display in logs in debug mode
-	MAX_BYTES int = 32
+	MAX_BYTES int = 4096
 )
 
 var (
@@ -50,7 +50,7 @@ func logMessage(who string, msg *bolt.Message) {
 	switch msg.T {
 	case bolt.HelloMsg:
 		// make sure we don't print the secrets in a Hello!
-		debug.Printf("[%s] <%s>: %#v\n\n", who, msg.T, msg.Data[:4])
+		debug.Printf("[%s] <%s>: %#v\n%s\n", who, msg.T, msg.Data, msg.Data)
 	case bolt.BeginMsg, bolt.FailureMsg:
 		debug.Printf("[%s] <%s>: %#v\n%s\n", who, msg.T, msg.Data[:end], msg.Data)
 	default:
@@ -179,6 +179,7 @@ func handleClient(conn net.Conn, b *backend.Backend) {
 			if err != nil {
 				warn.Println(err)
 			}
+			info.Printf("healthcheck for %s\n", conn.RemoteAddr())
 			return
 		}
 
@@ -264,13 +265,128 @@ func handleBoltConn(client bolt.BoltConn, clientVersion []byte, b *backend.Backe
 		}
 		hello = msg
 	case <-time.After(30 * time.Second):
-		warn.Println("timed out waiting for client to auth")
+		warn.Println("timed out waiting for auth from", client)
 		return
 	}
 	logMessage("C->P", hello)
 
 	if hello.T != bolt.HelloMsg {
-		warn.Println("expected HelloMsg, got:", hello.T)
+		// some clients are impolite...*cough*browser*cough*
+		if hello.T != bolt.GoodbyeMsg {
+			warn.Println("expected HelloMsg, got:", hello.T)
+		} else {
+			debug.Println("goodbye without a tx from", client)
+		}
+		return
+	}
+
+	// XXX SPLICE
+	if b.Splicing {
+		// molest our hello message
+		tinymap, _, err := bolt.ParseTinyMap(hello.Data[4:])
+		if err != nil {
+			panic(err)
+		}
+		val, found := tinymap["routing"]
+		if found {
+			info.Printf("HACK...found existing routing: %v\n", val)
+		}
+		tinymap["routing"] = map[string]interface{}{
+			"address": "localhost:8888",
+		}
+		info.Printf("HACK...hot-wired routing to be %v\n", tinymap["routing"])
+		raw, err := bolt.TinyMapToBytes(tinymap)
+		if err != nil {
+			panic(err)
+		}
+		data := make([]byte, len(raw)+6) // prefix + 00,00
+		copy(data, hello.Data[:4])
+		copy(data[4:], raw)
+		copy(data[len(raw)+4:], []byte{0x00, 0x00})
+
+		hey := bolt.Message{bolt.HelloMsg, data}
+		info.Printf("HACK...new hello message:\n%#v\n", hey)
+
+		serverConn, err := b.TheHorror(hey.Data, clientVersion)
+		if err != nil {
+			panic(err)
+		}
+		server := bolt.NewDirectConn(serverConn)
+
+		// inject a SUCCESS
+		successMap := map[string]interface{}{
+			"server":        "bolt-proxy/v0.2.0",
+			"connection_id": fmt.Sprintf("%s", client),
+		}
+		successMapBytes, err := bolt.TinyMapToBytes(successMap)
+		if err != nil {
+			panic(err)
+		}
+		success := bytes.NewBuffer([]byte{0x00})
+		// yolo
+		success.WriteByte(byte(uint8(len(successMapBytes))))
+		success.Write([]byte{0xb1, 0x70})
+		success.Write(successMapBytes)
+		success.Write([]byte{0x00, 0x00})
+		info.Printf("HACK crafted success message:\n%#v\n", success.Bytes())
+		err = client.WriteMessage(&bolt.Message{
+			T: bolt.SuccessMsg,
+			Data: []byte{
+				0x0, 0x2b, 0xb1, 0x70,
+				0xa2,
+				0x86, 0x73, 0x65, 0x72, 0x76, 0x65, 0x72,
+				0x8b, 0x4e, 0x65, 0x6f, 0x34, 0x6a, 0x2f, 0x34, 0x2e,
+				0x32, 0x2e, 0x30,
+				0x8d, 0x63, 0x6f, 0x6e, 0x6e, 0x65, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x5f, 0x69, 0x64,
+				0x86, 0x62, 0x6f, 0x6c, 0x74, 0x2d, 0x34,
+				0x00, 0x00},
+		})
+		if err != nil {
+			panic(err)
+		}
+		die := make(chan bool)
+		go func(client, server bolt.BoltConn) {
+			defer func() { die <- true }()
+
+			for {
+				select {
+				case m, ok := <-client.R():
+					if ok {
+						logMessage("C->S", m)
+						server.WriteMessage(m)
+					} else {
+						return
+					}
+				case <-time.After(15 * time.Minute):
+					info.Println("idle timeout, killing")
+					return
+				}
+			}
+		}(client, server)
+
+		go func(client, server bolt.BoltConn) {
+			defer func() { die <- true }()
+
+			for {
+				select {
+				case m, ok := <-server.R():
+					if ok {
+						logMessage("C<-S", m)
+						client.WriteMessage(m)
+					} else {
+						return
+					}
+				case <-time.After(15 * time.Minute):
+					info.Println("idle timeout, killing")
+					return
+				}
+			}
+		}(client, server)
+
+		info.Println("SPLICED CLIENT TO SERVER!")
+
+		<-die
+		info.Println("splice is dead, long live the splice")
 		return
 	}
 
@@ -279,6 +395,8 @@ func handleBoltConn(client bolt.BoltConn, clientVersion []byte, b *backend.Backe
 	if err != nil {
 		warn.Fatal(err)
 	}
+
+	// TODO: SPLICE HERE BABY!!!
 
 	// TODO: this seems odd...move parser and version stuff to bolt pkg
 	v, _ := backend.ParseVersion(clientVersion)
@@ -473,11 +591,11 @@ const (
 
 func main() {
 	var (
-		debugMode          bool
-		bindOn             string
-		proxyTo            string
-		username, password string
-		certFile, keyFile  string
+		debugMode, splicing bool
+		bindOn              string
+		proxyTo             string
+		username, password  string
+		certFile, keyFile   string
 	)
 
 	bindOn, found := os.LookupEnv("BOLT_PROXY_BIND")
@@ -505,6 +623,7 @@ func main() {
 	flag.StringVar(&certFile, "cert", certFile, "x509 certificate")
 	flag.StringVar(&keyFile, "key", keyFile, "x509 private key")
 	flag.BoolVar(&debugMode, "debug", debugMode, "enable debug logging")
+	flag.BoolVar(&splicing, "splice", false, "yolo")
 	flag.Parse()
 
 	// We log to stdout because our parents raised us right
@@ -523,7 +642,7 @@ func main() {
 
 	// ---------- BACK END
 	info.Println("starting bolt-proxy backend")
-	backend, err := backend.NewBackend(debug, username, password, proxyTo)
+	backend, err := backend.NewBackend(debug, username, password, proxyTo, splicing)
 	if err != nil {
 		warn.Fatal(err)
 	}

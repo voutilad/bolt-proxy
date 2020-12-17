@@ -13,6 +13,11 @@ import (
 
 var magic = []byte{0x60, 0x60, 0xb0, 0x17}
 
+// XXX: SPLICE
+func (b *Backend) TheHorror(hello, version []byte) (net.Conn, error) {
+	return authClient(hello, version, "tcp", b.Host, b.tls)
+}
+
 // Use the provided []byte as a Hello message to try authenticating with the
 // provided address, forcing the use of the given version []byte.
 //
@@ -50,8 +55,7 @@ func authClient(hello, version []byte, network, address string, useTls bool) (ne
 		return nil, errors.New(msg)
 	}
 
-	// Server should pick a version and provide as 4-byte array
-	// TODO: we eventually need version handling...for now ignore :-/
+	// Server should pick our version and provide as 4-byte array
 	buf := make([]byte, 256)
 	n, err := conn.Read(buf)
 	if err != nil || n != 4 {

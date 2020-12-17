@@ -1,6 +1,7 @@
 package bolt
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -312,4 +313,105 @@ func ParseTinyArray(buf []byte) ([]interface{}, int, error) {
 	}
 
 	return array, pos, nil
+}
+
+// XXX: SPLICE
+func StringToBytes(s string) ([]byte, error) {
+	buf := []byte(s)
+	size := len(buf)
+
+	if len(buf) < 16 {
+		// TinyString
+		prefix := []byte{uint8(0x80 + len(buf))}
+		return bytes.Join([][]byte{
+			prefix,
+			buf,
+		}, []byte{}), nil
+	}
+
+	prefix := new(bytes.Buffer)
+	var data interface{}
+	if size < 0x1000 {
+		data = 0xd000 + uint16(size)
+	} else if size < 0x10000 {
+		data = 0xd00000 + uint32(size)
+	} else {
+		data = 0xd0000000 + uint64(size)
+	}
+	err := binary.Write(prefix, binary.BigEndian, data)
+	if err != nil {
+		return []byte{}, err
+	}
+
+	return bytes.Join([][]byte{prefix.Bytes(), buf}, []byte{}), nil
+
+}
+
+func IntToBytes(i int) ([]byte, error) {
+
+	// Tiny Int
+	if i < 0x80 {
+		return []byte{byte(uint(i))}, nil
+	}
+
+	// Regular Int
+	buf := new(bytes.Buffer)
+	if i < 0x100 {
+		buf.Write([]byte{0xc8, byte(uint(i))})
+	} else if i < 0x10000 {
+		buf.WriteByte(byte(0xc9))
+		binary.Write(buf, binary.BigEndian, uint16(i))
+	} else if i < 0x100000000 {
+		buf.WriteByte(byte(0xca))
+		binary.Write(buf, binary.BigEndian, uint32(i))
+	} else {
+		buf.WriteByte(byte(0xcb))
+		binary.Write(buf, binary.BigEndian, uint64(i))
+	}
+	return buf.Bytes(), nil
+}
+
+// XXX: SPLICE
+func TinyMapToBytes(tinymap map[string]interface{}) ([]byte, error) {
+	buf := make([]byte, 1024*4)
+
+	if len(tinymap) > 15 {
+		return []byte{}, errors.New("too many keys for a tinymap!")
+	}
+
+	buf[0] = byte(0xa0 + uint8(len(tinymap)))
+	pos := 1
+
+	for key := range tinymap {
+		// key first
+		raw, err := StringToBytes(key)
+		if err != nil {
+			return buf[:pos], err
+		}
+		copy(buf[pos:], raw)
+		pos = pos + len(raw)
+
+		// now the value
+		val := tinymap[key]
+		switch val.(type) {
+		case int:
+			raw, err = IntToBytes(val.(int))
+		case string:
+			raw, err = StringToBytes(val.(string))
+		case map[string]interface{}:
+			raw, err = TinyMapToBytes(val.(map[string]interface{}))
+		case nil:
+			raw = []byte{0xc0}
+		default:
+			err = errors.New("unsupported type")
+		}
+
+		if err != nil {
+			return buf[:pos], err
+		}
+
+		copy(buf[pos:], raw)
+		pos = pos + len(raw)
+	}
+	return buf[:pos], nil
 }
