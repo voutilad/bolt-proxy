@@ -34,6 +34,8 @@ var (
 	debug *log.Logger
 	info  *log.Logger
 	warn  *log.Logger
+
+	hackyHackHost string
 )
 
 // Crude logging routine for helping debug bolt Messages. Tries not to clutter
@@ -292,7 +294,7 @@ func handleBoltConn(client bolt.BoltConn, clientVersion []byte, b *backend.Backe
 			info.Printf("HACK...found existing routing: %v\n", val)
 		}
 		tinymap["routing"] = map[string]interface{}{
-			"address": "localhost:8888",
+			"address": hackyHackHost,
 		}
 		info.Printf("HACK...hot-wired routing to be %v\n", tinymap["routing"])
 		raw, err := bolt.TinyMapToBytes(tinymap)
@@ -625,6 +627,9 @@ func main() {
 	flag.BoolVar(&debugMode, "debug", debugMode, "enable debug logging")
 	flag.BoolVar(&splicing, "splice", false, "yolo")
 	flag.Parse()
+
+	// XXX: SPLICE
+	hackyHackHost = bindOn
 
 	// We log to stdout because our parents raised us right
 	info = log.New(os.Stdout, "INFO ", log.Ldate|log.Ltime|log.Lmsgprefix)
