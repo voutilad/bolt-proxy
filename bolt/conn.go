@@ -28,9 +28,10 @@ type BoltConn interface {
 
 // Designed for operating direct (e.g. TCP/IP-only) Bolt connections
 type DirectConn struct {
-	conn io.ReadWriteCloser
-	buf  []byte
-	r    <-chan *Message
+	conn      io.ReadWriteCloser
+	buf, temp []byte
+	r         <-chan *Message
+	chunking  bool
 }
 
 // Used for WebSocket-based Bolt connections
@@ -50,9 +51,11 @@ type WsConn struct {
 func NewDirectConn(c io.ReadWriteCloser) DirectConn {
 	msgchan := make(chan *Message)
 	dc := DirectConn{
-		conn: c,
-		buf:  make([]byte, 1024*128),
-		r:    msgchan,
+		conn:     c,
+		buf:      make([]byte, 1024*128),
+		temp:     make([]byte, 2),
+		r:        msgchan,
+		chunking: false,
 	}
 
 	// Preset the buffer to be non-0x00, since zeros are
@@ -104,45 +107,80 @@ func (c DirectConn) R() <-chan *Message {
 // many messages at once.
 //
 // Also, would be good to NOT DECHUNK like this currently does.
-func (c DirectConn) readMessage() (*Message, error) {
-	var n int
-	var err error
+func (c *DirectConn) readMessage() (*Message, error) {
+	var (
+		err error
+		t   Type
+	)
 
-	underReads := 0
-	pos := 0
-	for {
-		n, err = c.conn.Read(c.buf[pos : pos+2])
+	if !c.chunking {
+		// We need to grab 2 bytes to get the message length
+		n, err := c.conn.Read(c.buf[:2])
 		if err != nil {
 			return nil, err
 		}
 		// TODO: deal with this horrible issue!
 		if n < 2 {
-			underReads++
-			if underReads > 5 {
-				panic("too many under reads...something's up")
-			}
-			continue
+			panic("under read...something's up")
 		}
-		msglen := int(binary.BigEndian.Uint16(c.buf[pos : pos+n]))
-		pos = pos + n
-
-		if msglen < 1 {
-			// 0x00 0x00 would mean we're done
-			break
-		}
-
-		endOfData := pos + msglen
-		// handle short reads of user data
-		for pos < endOfData {
-			n, err = c.conn.Read(c.buf[pos:endOfData])
-			if err != nil {
-				return nil, err
-			}
-			pos = pos + n
-		}
+	} else {
+		// We should have the msglen bytes in our temp buffer
+		// from the last time we processed a message and found
+		// we were chunking
+		c.buf[0] = c.temp[0]
+		c.buf[1] = c.temp[1]
 	}
 
-	t := IdentifyType(c.buf[:pos])
+	pos := 2
+	msglen := int(binary.BigEndian.Uint16(c.buf[:pos]))
+	endOfData := pos + msglen
+
+	// handle short reads of user data
+	for pos < endOfData {
+		n, err := c.conn.Read(c.buf[pos:endOfData])
+		if err != nil {
+			return nil, err
+		}
+		pos = pos + n
+	}
+
+	// read another 2 bytes...wasteful syscalls, but for now keep it simple
+	// if the next 2 bytes are 0x00, 0x00 we're done the message, but
+	// if the next 2 bytes are something else, we know we're chunking
+	// this shouldn't block (for long) as if chunking there should always
+	// be another message on the wire.
+	n, err := c.conn.Read(c.buf[pos : pos+2])
+	if err != nil {
+		return nil, err
+	}
+	if n < 2 {
+		panic("under read!")
+	}
+
+	// We can only inspect the type if we haven't yet been in chunking mode
+	if !c.chunking {
+		t = IdentifyType(c.buf[:pos])
+	} else {
+		t = ChunkedMsg
+	}
+
+	// Check to see if we're starting or ending chunking
+	if bytes.Equal([]byte{0x00, 0x00}, c.buf[pos:pos+2]) {
+		c.chunking = false
+		// scrub our temp buffer as we're done chunking
+		c.temp[0] = 0xff
+		c.temp[1] = 0xff
+		pos = pos + 2
+	} else {
+		c.chunking = true
+		// preserve these 2 bytes as they're the msglen of the next
+		// chunked message coming on the wire
+		c.temp[0] = c.buf[pos]
+		c.temp[1] = c.buf[pos+1]
+		// scrubbin' bubbles
+		c.buf[pos] = 0xff
+		c.buf[pos+1] = 0xff
+	}
 
 	// Copy data into Message...
 	data := make([]byte, pos)
@@ -232,7 +270,7 @@ func (c WsConn) String() string {
 // small Bolt Messages sometimes get packed into a single Frame(?!).
 //
 // For example, I've seen RUN + PULL all in 1 WebSocket frame.
-func (c WsConn) readMessages() ([]*Message, error) {
+func (c *WsConn) readMessages() ([]*Message, error) {
 	messages := make([]*Message, 0)
 
 	header, err := ws.ReadHeader(c.conn)
