@@ -270,7 +270,7 @@ func handleBoltConn(client bolt.BoltConn, clientVersion []byte, b *backend.Backe
 	logMessage("C->P", hello)
 
 	if hello.T != bolt.HelloMsg {
-		warn.Println("expected HelloMsg, got:", hello.T)
+		debug.Println("expected HelloMsg, got:", hello.T)
 		return
 	}
 
