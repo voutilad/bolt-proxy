@@ -3,6 +3,7 @@ package backend
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -171,7 +172,16 @@ func NewMonitor(user, password, uri string, hosts ...string) (*Monitor, error) {
 	// routing table.
 
 	// Get the first routing table and ttl details
-	rt, err := getNewRoutingTable(&driver)
+	u, err := url.Parse(uri)
+	if err != nil {
+		return nil, err
+	}
+	host := u.Host
+	if u.Port() == "" {
+		host = host + ":7687"
+	}
+
+	rt, err := getNewRoutingTable(&driver, host)
 	if err != nil {
 		panic(err)
 	}
@@ -184,7 +194,7 @@ func NewMonitor(user, password, uri string, hosts ...string) (*Monitor, error) {
 		for {
 			select {
 			case <-ticker.C:
-				rt, err := getNewRoutingTable(monitor.driver)
+				rt, err := getNewRoutingTable(monitor.driver, host)
 				if err != nil {
 					panic(err)
 				}
@@ -237,7 +247,7 @@ type table struct {
 // Denormalize the routing table to make post-processing easier
 const ROUTING_QUERY = `
 UNWIND $names AS name
-CALL dbms.routing.getRoutingTable({}, name)
+CALL dbms.routing.getRoutingTable({address: $host}, name)
   YIELD ttl, servers
 WITH name, ttl, servers
 UNWIND servers AS server
@@ -300,12 +310,12 @@ func queryDbNames(driver *neo4j.Driver) ([]string, error) {
 	return names, nil
 }
 
-func queryRoutingTable(driver *neo4j.Driver, names []string) (map[string]table, error) {
+func queryRoutingTable(driver *neo4j.Driver, host string, names []string) (map[string]table, error) {
 	session := (*driver).NewSession(neo4j.SessionConfig{})
 	defer session.Close()
 
 	result, err := session.ReadTransaction(func(tx neo4j.Transaction) (interface{}, error) {
-		return routingTableTx(tx, names)
+		return routingTableTx(tx, host, names)
 	})
 	if err != nil {
 		return map[string]table{}, err
@@ -325,9 +335,10 @@ func queryRoutingTable(driver *neo4j.Driver, names []string) (map[string]table, 
 //
 // The true data type is a map[string]table, mapping database names to their
 // respective tables.
-func routingTableTx(tx neo4j.Transaction, names []string) (interface{}, error) {
+func routingTableTx(tx neo4j.Transaction, host string, names []string) (interface{}, error) {
 	params := make(map[string]interface{}, 1)
 	params["names"] = names
+	params["host"] = host
 	result, err := tx.Run(ROUTING_QUERY, params)
 	if err != nil {
 		return nil, err
@@ -406,14 +417,14 @@ func routingTableTx(tx neo4j.Transaction, names []string) (interface{}, error) {
 // database names and get the current routing table for each.
 //
 // XXX: this is pretty heavy weight :-(
-func getNewRoutingTable(driver *neo4j.Driver) (*RoutingTable, error) {
+func getNewRoutingTable(driver *neo4j.Driver, host string) (*RoutingTable, error) {
 	names, err := queryDbNames(driver)
 	if err != nil {
 		msg := fmt.Sprintf("error getting database names: %v\n", err)
 		return nil, errors.New(msg)
 	}
 
-	tableMap, err := queryRoutingTable(driver, names)
+	tableMap, err := queryRoutingTable(driver, host, names)
 	if err != nil {
 		msg := fmt.Sprintf("error getting routing table: %v\n", err)
 		return nil, errors.New(msg)
