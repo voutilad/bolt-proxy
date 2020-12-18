@@ -28,6 +28,7 @@ type Monitor struct {
 
 type Version struct {
 	Major, Minor, Patch uint8
+	Extra               string
 }
 
 func ParseVersion(buf []byte) (Version, error) {
@@ -43,10 +44,11 @@ func ParseVersion(buf []byte) (Version, error) {
 }
 
 func (v Version) String() string {
-	return fmt.Sprintf("Bolt{major: %d, minor: %d, patch: %d}",
+	return fmt.Sprintf("Bolt{major: %d, minor: %d, patch: %d, extra: %s}",
 		v.Major,
 		v.Minor,
-		v.Patch)
+		v.Patch,
+		v.Extra)
 }
 
 func (v Version) Bytes() []byte {
@@ -80,10 +82,11 @@ func newConfigurer(hosts []string) func(c *neo4j.Config) {
 	}
 }
 
-const VERSION_QUERY = `
-CALL dbms.components() YIELD name, versions
+const VERSION_QUERY = `CALL dbms.components() YIELD name, versions
 WITH name, versions WHERE name = "Neo4j Kernel"
-RETURN [x IN split(head(versions), ".") | toInteger(x)] AS version
+WITH head(versions) AS version
+RETURN [x IN split(head(split(version, "-")), ".") | toInteger(x)] AS version,
+  coalesce(split(version, "-")[1], "") AS extra
 `
 
 // Get the backend Neo4j version based on the output of the VERSION_QUERY,
@@ -107,20 +110,33 @@ func getVersion(driver *neo4j.Driver) (Version, error) {
 
 	val, found := record.Get("version")
 	if !found {
-		return version, errors.New("couldn't find version in query results")
+		return version, errors.New("couldn't find 'version' in query results")
 	}
 	data, ok := val.([]interface{})
 	if !ok {
-		return version, errors.New("version isn't an array")
+		return version, errors.New("'version' isn't an array")
 	}
-	if len(data) != 3 {
-		return version, errors.New("version array doesn't contain 3 values")
+	if len(data) < 2 {
+		return version, errors.New("'version' array is empty or too small")
+	}
+
+	val, found = record.Get("extra")
+	if !found {
+		return version, errors.New("couldn't find 'extra' version info")
+	}
+	extra, ok := val.(string)
+	if !ok {
+		return version, errors.New("'extra' value isn't a string")
 	}
 
 	// yolo for now
 	version.Major = uint8(data[0].(int64))
 	version.Minor = uint8(data[1].(int64))
-	version.Patch = uint8(data[2].(int64))
+
+	if len(data) > 2 {
+		version.Patch = uint8(data[2].(int64))
+	}
+	version.Extra = extra
 
 	return version, nil
 }
