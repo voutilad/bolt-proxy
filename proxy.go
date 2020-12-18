@@ -54,7 +54,7 @@ func logMessage(who string, msg *bolt.Message) {
 	case bolt.BeginMsg, bolt.FailureMsg:
 		debug.Printf("[%s] <%s>: %#v\n%s\n", who, msg.T, msg.Data[:end], msg.Data)
 	default:
-		debug.Printf("[%s] <%s>: %#v%s\n", who, msg.T, msg.Data[:end], suffix)
+		debug.Printf("[%s] <%s>: %#v%s, last2:%#v\n", who, msg.T, msg.Data[:end], suffix, msg.Data[len(msg.Data)-2:])
 	}
 }
 
