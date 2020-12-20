@@ -78,38 +78,51 @@ func IdentifyType(buf []byte) Type {
 	return TypeFromByte(buf[3])
 }
 
-// Try parsing some bytes into a Packstream Tiny Map, returning it as a map
+// Try parsing some bytes into a Packstream Map, returning it as a map
 // of strings to their values as byte arrays.
 //
 // If not found or something horribly wrong, return nil and an error. Also,
 // will panic on a nil input.
-//
-// Note that this is only designed for finding the first and most likely
-// useful tiny map in a byte array. As such it does not tell you where that
-// map ends in the array!
-func ParseTinyMap(buf []byte) (map[string]interface{}, int, error) {
+func ParseMap(buf []byte) (map[string]interface{}, int, error) {
 	if buf == nil {
 		panic("cannot parse nil byte array for structs")
 	}
 
-	result := make(map[string]interface{})
-
 	if len(buf) < 1 {
-		return result, 0, errors.New("bytes empty, cannot parse struct")
+		return nil, 0, errors.New("bytes empty, cannot parse struct")
 	}
 
-	pos := 0
-	if buf[pos]>>4 != 0xa {
-		fmt.Sprintf("XXX: not a tiny map buf[pos] = %#v\n", buf[pos])
-		return result, pos, errors.New("bytes missing tiny-map prefix of 0xa")
+	if buf[0]>>4 != 0xa && (buf[0] < 0xd8 || buf[0] > 0xda) {
+		return nil, 0, errors.New("expected a map")
 	}
 
-	numMembers := int(buf[pos] & 0xf)
-	pos++
+	numMembers := 0
+	pos := 1
+
+	if buf[0]>>4 == 0xa {
+		// Tiny Map
+		numMembers = int(buf[0] & 0xf)
+	} else {
+		switch buf[0] & 0x0f {
+		case 0x08:
+			numMembers = int(buf[pos])
+			pos++
+		case 0x09:
+			numMembers = int(binary.BigEndian.Uint16(buf[pos : pos+2]))
+			pos = pos + 2
+		case 0x0a:
+			numMembers = int(binary.BigEndian.Uint32(buf[pos : pos+4]))
+			pos = pos + 4
+		default:
+			return nil, 0, errors.New("invalid map prefix")
+		}
+	}
+
+	result := make(map[string]interface{}, numMembers)
 
 	for i := 0; i < numMembers; i++ {
-		// map keys are tiny-strings typically
-		name, n, err := ParseTinyString(buf[pos:])
+		// map keys are Strings
+		name, n, err := ParseString(buf[pos:])
 		if err != nil {
 			panic(err)
 		}
@@ -134,15 +147,7 @@ func ParseTinyMap(buf []byte) (map[string]interface{}, int, error) {
 			result[name] = val
 			pos = pos + n
 		case 0x9: // tiny-array
-			val, n, err := ParseTinyArray(buf[pos:])
-			if err != nil {
-				panic(err)
-				return result, pos, err
-			}
-			result[name] = val
-			pos = pos + n
-		case 0xd: // string
-			val, n, err := ParseString(buf[pos:])
+			val, n, err := ParseArray(buf[pos:])
 			if err != nil {
 				panic(err)
 				return result, pos, err
@@ -150,10 +155,10 @@ func ParseTinyMap(buf []byte) (map[string]interface{}, int, error) {
 			result[name] = val
 			pos = pos + n
 		case 0xa: // tiny-map
-			value, n, err := ParseTinyMap(buf[pos:])
+			value, n, err := ParseMap(buf[pos:])
 			if err != nil {
 				panic(err)
-				return nil, pos, err
+				return result, pos, err
 			}
 			result[name] = value
 			pos = pos + n
@@ -171,10 +176,41 @@ func ParseTinyMap(buf []byte) (map[string]interface{}, int, error) {
 			case 3:
 				result[name] = true
 				pos++
+			case 0x8, 0x9, 0xa, 0xb:
+				val, n, err := ParseInt(buf[pos:])
+				if err != nil {
+					return result, pos, err
+				}
+				result[name] = val
+				pos = pos + n
 			}
+		case 0xd:
+			nib := int(buf[pos] & 0xf)
+			switch nib {
+			case 0x0, 0x1, 0x2: // string
+				val, n, err := ParseString(buf[pos:])
+				if err != nil {
+					return result, pos, err
+				}
+				result[name] = val
+				pos = pos + n
+			case 0x4, 0x5, 0x6: // array
+				val, n, err := ParseArray(buf[pos:])
+				if err != nil {
+					return result, pos, err
+				}
+				result[name] = val
+				pos = pos + n
+			case 0x7:
+				panic("invalid prefix 0xd7")
+			case 0x8, 0x9, 0xa:
+				// err
+				panic("not ready")
+			}
+
 		default:
 			errMsg := fmt.Sprintf("found unsupported encoding type: %#v\n", buf[pos])
-			return nil, pos, errors.New(errMsg)
+			return result, pos, errors.New(errMsg)
 		}
 	}
 
@@ -235,10 +271,17 @@ func ParseTinyString(buf []byte) (string, int, error) {
 // Parse a byte slice into a string, returning the string value, the last
 // position used in the byte slice, and optionally an error
 func ParseString(buf []byte) (string, int, error) {
-	if len(buf) < 1 || buf[0]>>4 != 0xd {
-		return "", 0, errors.New("expected string!")
+	if len(buf) < 1 {
+		return "", 0, errors.New("empty byte slice")
 	}
 	pos := 0
+
+	if buf[0]>>4 == 0x8 {
+		// tiny string
+		return ParseTinyString(buf)
+	} else if buf[0] < 0xd0 || buf[0] > 0xd2 {
+		return "", 0, errors.New("slice doesn't look like valid string")
+	}
 
 	// how many bytes is the encoding for the string length?
 	readAhead := int(1 << int(buf[pos]&0xf))
@@ -257,13 +300,38 @@ func ParseString(buf []byte) (string, int, error) {
 // Parse a byte slice into a TinyArray as an array of interface{} values,
 // returning the array, the last position in the byte slice read, and
 // optionally an error.
-func ParseTinyArray(buf []byte) ([]interface{}, int, error) {
-	if buf[0]>>4 != 0x9 {
-		return nil, 0, errors.New("expected tiny-array")
+func ParseArray(buf []byte) ([]interface{}, int, error) {
+	if buf[0]>>4 != 0x9 && (buf[0] < 0xd4 || buf[0] > 0xd6) {
+		return nil, 0, errors.New("expected an array")
+
 	}
-	size := int(buf[0] & 0xf)
-	array := make([]interface{}, size)
+	size := 0
 	pos := 1
+
+	if buf[0]>>4 == 0x9 {
+		// Tiny Array
+		size = int(buf[0] & 0xf)
+	} else {
+		switch buf[0] & 0x0f {
+		case 0x04:
+			size = int(buf[pos])
+			pos++
+		case 0x05:
+			size = int(binary.BigEndian.Uint16(buf[pos : pos+2]))
+			pos = pos + 2
+		case 0x06:
+			size = int(binary.BigEndian.Uint32(buf[pos : pos+4]))
+			pos = pos + 4
+		default:
+			return nil, 0, errors.New("invalid array prefix")
+		}
+	}
+
+	array := make([]interface{}, size)
+	if size == 0 {
+		// bail early
+		return array, pos, nil
+	}
 
 	for i := 0; i < size; i++ {
 		memberType := buf[pos] >> 4
@@ -304,13 +372,29 @@ func ParseTinyArray(buf []byte) ([]interface{}, int, error) {
 				array[i] = val
 				pos = pos + n
 			}
-		case 0xd: // regular string
-			val, n, err := ParseString(buf[pos:])
-			if err != nil {
-				return array, pos, err
+		case 0xd:
+			nib := int(buf[pos] & 0xf)
+			switch nib {
+			case 0x0, 0x1, 0x2: // string
+				val, n, err := ParseString(buf[pos:])
+				if err != nil {
+					return array, pos, err
+				}
+				array[i] = val
+				pos = pos + n
+			case 0x4, 0x5, 0x6: // array
+				val, n, err := ParseArray(buf[pos:])
+				if err != nil {
+					return array, pos, err
+				}
+				array[i] = val
+				pos = pos + n
+			case 0xd7:
+				panic("invalid prefix 0xd7")
+			case 0x8, 0x9, 0xa:
+				// err
+				panic("not ready")
 			}
-			array[i] = val
-			pos = pos + n
 		default:
 			errMsg := fmt.Sprintf("found unsupported encoding type: %#v", memberType)
 			return array, pos, errors.New(errMsg)

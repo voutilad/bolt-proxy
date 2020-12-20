@@ -75,7 +75,7 @@ func (b *Backend) Authenticate(hello *bolt.Message) (map[string]bolt.BoltConn, e
 	}
 
 	// TODO: clean up this api...push the dirt into Bolt package
-	msg, pos, err := bolt.ParseTinyMap(hello.Data[4:])
+	msg, pos, err := bolt.ParseMap(hello.Data[4:])
 	if err != nil {
 		b.log.Printf("XXX pos: %d, hello map: %#v\n", pos, msg)
 		panic(err)

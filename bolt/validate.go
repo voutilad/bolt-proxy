@@ -90,7 +90,7 @@ func ValidateHandshake(client, server []byte) ([]byte, error) {
 // returns nil and an error.
 func ValidateMode(buf []byte) (Mode, error) {
 	if IdentifyType(buf) == BeginMsg {
-		tinyMap, _, err := ParseTinyMap(buf[4:])
+		tinyMap, _, err := ParseMap(buf[4:])
 		if err != nil {
 			panic(err)
 		}

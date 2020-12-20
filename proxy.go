@@ -364,16 +364,55 @@ func handleBoltConn(client bolt.BoltConn, clientVersion []byte, b *backend.Backe
 			db := rt.DefaultDb
 
 			// get the db name, if any. otherwise, use default
-			m, _, err := bolt.ParseTinyMap(msg.Data[4:])
-			if err == nil {
-				val, found := m["db"]
-				if found {
-					ok := false
-					db, ok = val.(string)
-					if !ok {
-						panic("db name wasn't a string?!")
-					}
+			var (
+				m   map[string]interface{}
+				err error
+				n   int
+			)
+			if msg.T == bolt.BeginMsg {
+				m, _, err = bolt.ParseMap(msg.Data[4:])
+				if err != nil {
+					warn.Println(err)
+					return
 				}
+			} else if msg.T == bolt.RunMsg {
+				pos := 4
+				// query
+				_, n, err = bolt.ParseString(msg.Data[pos:])
+				if err != nil {
+					warn.Println(err)
+					return
+				}
+				pos = pos + n
+
+				// query params
+				_, n, err = bolt.ParseMap(msg.Data[pos:])
+				if err != nil {
+					warn.Println(err)
+					return
+				}
+				pos = pos + n
+
+				// metadata..like the db name!
+				m, _, err = bolt.ParseMap(msg.Data[pos:])
+				if err != nil {
+					warn.Println(err)
+					return
+				}
+			} else {
+				panic("shouldn't be starting a tx without a Begin or Run message")
+			}
+
+			// Extract the db name, if any
+			val, found := m["db"]
+			if found {
+				ok := false
+				db, ok = val.(string)
+				if !ok {
+					panic("db name wasn't a string?!")
+				}
+			} else {
+				debug.Printf("using default db of %s\n", db)
 			}
 
 			// Just choose the first one for now...something simple

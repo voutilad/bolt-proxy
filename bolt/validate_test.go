@@ -51,7 +51,7 @@ func TestParsingFailure(t *testing.T) {
 		0x66, 0x61, 0x69, 0x6c, 0x75, 0x72, 0x65, 0x2e,
 		0x0, 0x0}
 
-	result, _, err := ParseTinyMap(buf)
+	result, _, err := ParseMap(buf)
 	if err != nil {
 		t.Fatal("failed to parse tiny map")
 	}
