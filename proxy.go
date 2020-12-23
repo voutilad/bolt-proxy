@@ -277,7 +277,8 @@ func handleBoltConn(client bolt.BoltConn, clientVersion []byte, b *backend.Backe
 	// get backend connection
 	pool, err := b.Authenticate(hello)
 	if err != nil {
-		warn.Fatal(err)
+		warn.Println(err)
+		return
 	}
 
 	// TODO: this seems odd...move parser and version stuff to bolt pkg
@@ -360,14 +361,17 @@ func handleBoltConn(client bolt.BoltConn, clientVersion []byte, b *backend.Backe
 		// we need to find a new connection to switch to
 		if startingTx {
 			mode, _ := bolt.ValidateMode(msg.Data)
-			rt := b.RoutingTable()
-			db := rt.DefaultDb
+			info, err := b.ClusterInfo()
+			if err != nil {
+				warn.Printf("error getting cluster info: %s\n", err)
+				return
+			}
+			db := info.DefaultDb
 
 			// get the db name, if any. otherwise, use default
 			var (
-				m   map[string]interface{}
-				err error
-				n   int
+				m map[string]interface{}
+				n int
 			)
 			if msg.T == bolt.BeginMsg {
 				m, _, err = bolt.ParseMap(msg.Data[4:])
@@ -416,11 +420,16 @@ func handleBoltConn(client bolt.BoltConn, clientVersion []byte, b *backend.Backe
 			}
 
 			// Just choose the first one for now...something simple
+			rt, err := b.RoutingTable(db)
+			if err != nil {
+				warn.Printf("error getting routing table for %s: %s\n", db, err)
+				return
+			}
 			var hosts []string
 			if mode == bolt.ReadMode {
-				hosts, err = rt.ReadersFor(db)
+				hosts = rt.Readers
 			} else {
-				hosts, err = rt.WritersFor(db)
+				hosts = rt.Writers
 			}
 			if err != nil {
 				warn.Printf("couldn't find host for '%s' in routing table", db)
