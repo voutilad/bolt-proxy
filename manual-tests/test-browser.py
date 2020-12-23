@@ -1,6 +1,9 @@
 #!/usr/bin/env python
+import os
 from neo4j import debug
 import neo4j
+
+password = os.environ.get("NEO4J_PASSWORD", "password")
 
 BIGQUERY = """
 CALL db.labels() YIELD label                                                                                                                                                 RETURN {name:'labels', data:COLLECT(label)[..1000]} AS result
@@ -25,6 +28,6 @@ def do(query):
     return work
 
 
-with neo4j.GraphDatabase.driver("bolt://localhost:8888", auth=("neo4j", "password")) as driver:
+with neo4j.GraphDatabase.driver("bolt://localhost:8888", auth=("neo4j", password)) as driver:
     with driver.session(database="neo4j") as s:
         s.read_transaction(do(BIGQUERY))

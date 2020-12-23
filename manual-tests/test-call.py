@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import os
 from neo4j import debug
 import neo4j
 
@@ -10,8 +11,9 @@ def do(query):
             print(type(r))
     return work
 
+password = os.environ.get("NEO4J_PASSWORD", "password")
 
-with neo4j.GraphDatabase.driver("bolt://localhost:8888", auth=("neo4j", "password")) as driver:
+with neo4j.GraphDatabase.driver("bolt://localhost:8888", auth=("neo4j", password)) as driver:
     with driver.session(database="neo4j") as s:
         s.read_transaction(do("CALL dbms.functions()"))
         s.read_transaction(do("CALL dbms.procedures()"))
@@ -19,4 +21,3 @@ with neo4j.GraphDatabase.driver("bolt://localhost:8888", auth=("neo4j", "passwor
         s.read_transaction(do("CALL db.indexes()"))
         s.read_transaction(do("CALL dbms.clientConfig()"))
         s.read_transaction(do("CALL dbms.showCurrentUser()"))
-

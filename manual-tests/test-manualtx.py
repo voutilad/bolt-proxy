@@ -1,9 +1,12 @@
 #!/usr/bin/env python
+import os
 from neo4j import debug
 from time import time
 import neo4j
 
 debug.watch("neo4j")
+
+password = os.environ.get("NEO4J_PASSWORD", "password")
 
 #time based string key
 key = time().hex()
@@ -23,7 +26,7 @@ def read(tx):
         print("COULD NOT MATCH!")
     return ok
 
-with neo4j.GraphDatabase.driver("bolt://localhost:8888", auth=("neo4j", "password")) as driver:
+with neo4j.GraphDatabase.driver("bolt://localhost:8888", auth=("neo4j", password)) as driver:
     with driver.session(database="neo4j", default_access_mode=neo4j.WRITE_ACCESS) as s:
         with s.begin_transaction() as tx:
             write(tx)
@@ -32,4 +35,3 @@ with neo4j.GraphDatabase.driver("bolt://localhost:8888", auth=("neo4j", "passwor
             else:
                 tx.rollback()
             tx.close()
-

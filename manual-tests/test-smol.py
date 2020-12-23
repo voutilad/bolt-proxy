@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import os
 from neo4j import debug
 import neo4j
 
@@ -13,8 +14,9 @@ def smolRead(tx):
     for r in result:
         print(r)
 
-with neo4j.GraphDatabase.driver("bolt://localhost:8888", auth=("neo4j", "password")) as driver:
+password = os.environ.get("NEO4J_PASSWORD", "password")
+
+with neo4j.GraphDatabase.driver("bolt://localhost:8888", auth=("neo4j", password)) as driver:
     with driver.session(database="neo4j") as s:
         s.write_transaction(smolWrite)
         s.read_transaction(smolRead)
-

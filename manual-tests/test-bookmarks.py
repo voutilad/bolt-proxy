@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import os
 from neo4j import debug
 from time import time
 import neo4j
@@ -24,7 +25,9 @@ def read(tx):
     return ok
 
 bookmarks = ()
-with neo4j.GraphDatabase.driver("bolt://localhost:8888", auth=("neo4j", "password")) as driver:
+password = os.environ.get("NEO4J_PASSWORD", "password")
+
+with neo4j.GraphDatabase.driver("bolt://localhost:8888", auth=("neo4j", password)) as driver:
     with driver.session(database="neo4j", default_access_mode=neo4j.WRITE_ACCESS) as s:
         s.write_transaction(write)
         bookmarks = (s.last_bookmark())
